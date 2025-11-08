@@ -1,15 +1,165 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ============================================
+// Enums (Type Safety)
+// ============================================
+
+enum MembershipRole {
+  SUPER_ADMIN
+  INSTRUCTOR
+  STUDENT
+  GUARDIAN
+}
+
+enum MembershipStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  CANCELLED
+}
+
+// ============================================
+// Core Tables
+// ============================================
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  subdomain String?  @unique // For *.coursecove.com routing
+  email     String?
+  phone     String?
+
+  // Clerk integration
+  clerkOrganizationId String? @unique @map("clerk_organization_id")
+
+  // Status
+  status    MembershipStatus @default(ACTIVE)
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  memberships OrganizationMembership[]
+  invitations Invitation[]
+
+  // Indexes
+  @@index([subdomain])
+  @@index([status])
+  @@index([clerkOrganizationId])
+  @@map("organizations")
+}
+
+model User {
+  id        String   @id @default(cuid())
+
+  // Clerk integration
+  clerkUserId String @unique @map("clerk_user_id")
+
+  // Profile
+  email     String   @unique
+  firstName String?  @map("first_name")
+  lastName  String?  @map("last_name")
+  avatarUrl String?  @map("avatar_url")
+
+  // Status
+  status    MembershipStatus @default(ACTIVE)
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  memberships         OrganizationMembership[]
+  invitationsSent     Invitation[] @relation("InvitedBy")
+  invitationsAccepted Invitation[] @relation("AcceptedBy")
+
+  // Indexes
+  @@index([clerkUserId])
+  @@index([email])
+  @@index([status])
+  @@map("users")
+}
+
+model OrganizationMembership {
+  id        String   @id @default(cuid())
+
+  // Foreign keys
+  organizationId String @map("organization_id")
+  userId         String @map("user_id")
+
+  // Role (scoped per organization) - ENUM for type safety
+  role MembershipRole
+
+  // Clerk integration
+  clerkMembershipId String? @unique @map("clerk_membership_id")
+
+  // Status
+  status MembershipStatus @default(ACTIVE)
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Constraints
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@index([organizationId])
+  @@index([role])
+  @@index([clerkMembershipId])
+  @@map("organization_memberships")
+}
+
+model Invitation {
+  id        String   @id @default(cuid())
+
+  // Foreign keys
+  organizationId String @map("organization_id")
+  invitedById    String @map("invited_by")
+  acceptedById   String? @map("accepted_by")
+
+  // Invitation details
+  email  String
+  role   MembershipRole // Use enum for consistency
+  token  String  @unique
+
+  // Status - use enum for type safety
+  status InvitationStatus @default(PENDING)
+
+  // Timestamps
+  expiresAt  DateTime  @map("expires_at")
+  acceptedAt DateTime? @map("accepted_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedBy    User         @relation("InvitedBy", fields: [invitedById], references: [id])
+  acceptedBy   User?        @relation("AcceptedBy", fields: [acceptedById], references: [id])
+
+  // Indexes
+  @@index([email])
+  @@index([organizationId])
+  @@index([token])
+  @@index([status])
+  @@index([expiresAt]) // For cleanup queries
+  @@map("invitations")
 }
