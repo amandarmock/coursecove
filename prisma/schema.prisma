@@ -163,3 +163,32 @@ model Invitation {
   @@index([expiresAt]) // For cleanup queries
   @@map("invitations")
 }
+
+model WebhookEvent {
+  id          String    @id @default(cuid())
+
+  // Clerk webhook identifier (for idempotency)
+  webhookId   String    @unique @map("webhook_id") // svix-id from headers
+
+  // Event details
+  eventType   String    @map("event_type")  // e.g., "user.created"
+  payload     Json                          // Full webhook payload
+
+  // Processing status
+  status      String    @default("pending") // pending, completed, failed
+  attempts    Int       @default(0)         // Number of processing attempts
+
+  // Error tracking
+  lastError   String?   @map("last_error")  // Last error message if failed
+
+  // Timestamps
+  processedAt DateTime? @map("processed_at") // When successfully processed
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  // Indexes for efficient queries
+  @@index([eventType])
+  @@index([status])
+  @@index([createdAt])
+  @@map("webhook_events")
+}
