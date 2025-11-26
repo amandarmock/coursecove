@@ -4,12 +4,27 @@ Multi-tenant learning management system for music schools, yoga studios, tutorin
 
 ## Features
 
+### Core Platform
 - **Multi-tenant Architecture** - Each organization gets its own subdomain (e.g., `musicschool.coursecove.com`)
 - **Secure Authentication** - Powered by Clerk with organization support
 - **Row-Level Security** - PostgreSQL RLS ensures data isolation between tenants
 - **Hybrid Webhook Processing** - Fast synchronous processing with Inngest queue fallback for reliability
 - **Type-Safe Database** - Prisma ORM with full TypeScript support
 - **Modern UI** - Tailwind CSS + shadcn/ui components
+
+### Appointment Management (F001) - 45% Complete
+- **Appointment Types** - Create reusable templates for services
+- **Business Locations** - Manage multiple physical locations
+- **Instructor Qualifications** - Assign instructors to appointment types
+- **Location Modes** - Support for in-person, online, and student location appointments
+- **Admin Portal** - Full management interface for appointments and private lessons
+- **Teaching Portal** - Instructor view of qualified appointment types
+
+### Booking System (F002) - Planned
+- **Student Portal** - Browse and book available appointments
+- **Calendar Integration** - Date/time selection with availability
+- **Appointment Management** - View, cancel, and reschedule bookings
+- **Notifications** - Email confirmations and reminders
 
 ## Architecture
 
@@ -33,7 +48,11 @@ yogastudio.coursecove.com   →  Organization: "Yoga Studio"
 
 ### Prerequisites
 
-Before starting, you'll need accounts for:
+**Required Software:**
+- **Node.js 18+** and **npm 9+**
+- **ngrok** - Required for webhook development ([ngrok.com](https://ngrok.com))
+
+**Required Service Accounts:**
 - **Clerk** - Authentication provider ([clerk.com](https://clerk.com))
 - **Supabase** - PostgreSQL database ([supabase.com](https://supabase.com))
 - **Inngest** - Background job processing ([inngest.com](https://inngest.com)) (optional for production, use dummy keys for dev)
@@ -63,11 +82,15 @@ INNGEST_EVENT_KEY="test"
 INNGEST_SIGNING_KEY="test"
 # For production, get real keys from inngest.com
 
-# Next.js Configuration
+# App Configuration
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+NODE_ENV=development
+
+# Clerk URLs
 NEXT_PUBLIC_CLERK_SIGN_IN_URL="/sign-in"
 NEXT_PUBLIC_CLERK_SIGN_UP_URL="/sign-up"
-NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL="/"
-NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL="/"
+NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL="/"
+NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL="/"
 ```
 
 **How to get these values:**
@@ -93,18 +116,46 @@ NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL="/"
 # Install dependencies
 npm install
 
+# Install ngrok (required for webhooks)
+npm install -g ngrok
+
 # Generate Prisma client
 npx prisma generate
 
 # Run database migrations
 npx prisma migrate dev
+```
 
-# Start development server
+**Configure Clerk webhooks (REQUIRED):**
+
+```bash
+# Terminal 1: Start ngrok tunnel
+ngrok http 3000
+```
+
+1. Copy the ngrok forwarding URL (e.g., `https://abc123.ngrok.io`)
+2. Go to [Clerk Dashboard](https://dashboard.clerk.com) → Webhooks → Add Endpoint
+3. Endpoint URL: `https://abc123.ngrok.io/api/webhooks/clerk`
+4. Subscribe to all events: `user.*`, `organization.*`, `organizationMembership.*`
+5. Copy the Signing Secret and add to `.env.local`:
+   ```bash
+   CLERK_WEBHOOK_SECRET="whsec_..."
+   ```
+
+**Start development servers:**
+
+```bash
+# Terminal 2: Next.js dev server
 npm run dev
 
-# In a separate terminal, start Inngest dev server
+# Terminal 3: Inngest dev server
 npx inngest-cli@latest dev
 ```
+
+**You should have 3 terminals running:**
+1. ngrok tunnel (Terminal 1)
+2. Next.js dev server (Terminal 2)
+3. Inngest dev server (Terminal 3)
 
 Visit:
 - App: [http://localhost:3000](http://localhost:3000)
@@ -139,21 +190,22 @@ coursecove-app/
 │   ├── schema.prisma           # Database schema
 │   └── migrations/             # Migration history
 ├── docs/                       # Comprehensive documentation
-│   ├── architecture-overview.md
-│   ├── testing-guide.md
-│   ├── deployment-guide.md
-│   └── progress-log.md
+│   └── features/
+│       ├── F001-appointment-management.md  # Appointment system (45% complete)
+│       └── F002-booking-management.md      # Booking system (planned)
 └── .env.local                  # Environment variables (not committed)
 ```
 
 ## Documentation
 
-Comprehensive documentation is available in the `/docs` folder:
+Project documentation is available in the `/docs` folder:
 
-- **[Architecture Overview](./docs/architecture-overview.md)** - System architecture, hybrid webhook processing, security model
-- **[Testing Guide](./docs/testing-guide.md)** - Local development, webhook testing, Inngest debugging
-- **[Deployment Guide](./docs/deployment-guide.md)** - Production deployment to Vercel with Inngest
-- **[Progress Log](./docs/progress-log.md)** - Development timeline and accomplishments
+### Feature Documentation
+- **[F001: Appointment Management](./docs/features/F001-appointment-management.md)** - Admin/instructor appointment setup (45% complete)
+- **[F002: Booking & Management](./docs/features/F002-booking-management.md)** - Student booking system (planned)
+
+### Project History
+- **[CHANGELOG](./CHANGELOG.md)** - All changes, features, and decisions
 
 ## Key Concepts
 
@@ -181,7 +233,7 @@ To ensure reliable synchronization between Clerk and Supabase, we use a **hybrid
 - **No delays**: Unlike cron jobs, no artificial waiting periods
 - **Monitoring**: Inngest dashboard provides visibility into all background jobs
 
-See [architecture-overview.md](./docs/architecture-overview.md) for details.
+See the webhook processing section above for implementation details.
 
 ### Authentication Flow
 
@@ -210,37 +262,18 @@ npx prisma migrate reset
 npx prisma studio
 ```
 
-### Testing Webhooks Locally
+### Monitoring Webhook Processing
 
-1. **Start local servers:**
-   ```bash
-   # Terminal 1: Next.js dev server
-   npm run dev
+Once you have ngrok and the development servers running (see Installation above), you can monitor webhook activity:
 
-   # Terminal 2: Inngest dev server
-   npx inngest-cli@latest dev
-   ```
-
-2. **Start ngrok tunnel:**
-   ```bash
-   # Terminal 3
-   ngrok http 3000
-   ```
-
-3. **Configure webhook in Clerk:**
-   - Go to Clerk Dashboard → Webhooks
-   - Add endpoint: `https://[ngrok-url].ngrok.io/api/webhooks/clerk`
-   - Select events: user.*, organization.*, organizationMembership.*
-   - Copy webhook secret to `.env.local`
-
-4. **Monitor webhook processing:**
+1. **Monitor webhook processing:**
    - **Fast path success**: Check Next.js console for "✓ Fast path success" logs
    - **Slow path (queued)**: Check Next.js console for "⏳ Queuing to Inngest" logs
    - **Inngest dashboard**: [http://localhost:8288](http://localhost:8288) shows all queued jobs and their status
    - **Database sync**: Check Supabase tables: `users`, `organizations`, `organization_memberships`
    - **Idempotency tracking**: Query `webhook_events` table to see processing history
 
-See [testing-guide.md](./docs/testing-guide.md) for comprehensive testing procedures.
+See the Monitoring Webhook Processing section above for testing procedures.
 
 ### Monitoring Webhook Events
 
@@ -341,18 +374,22 @@ CLERK_WEBHOOK_SECRET="whsec_..."
 INNGEST_EVENT_KEY="prod_key_from_inngest"
 INNGEST_SIGNING_KEY="signkey_prod_..."
 
-# Next.js
+# App Configuration
+NEXT_PUBLIC_APP_URL=https://yourdomain.com
+NODE_ENV=production
+
+# Clerk URLs
 NEXT_PUBLIC_CLERK_SIGN_IN_URL="/sign-in"
 NEXT_PUBLIC_CLERK_SIGN_UP_URL="/sign-up"
-NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL="/"
-NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL="/"
+NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL="/"
+NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL="/"
 ```
 
-See [deployment-guide.md](./docs/deployment-guide.md) for detailed deployment instructions.
+See the Production Deployment section above for detailed instructions.
 
 ## Contributing
 
-This is a private project. See `docs/progress-log.md` for development status.
+This is a private project. See [CHANGELOG.md](./CHANGELOG.md) for development status and history.
 
 ## License
 
@@ -360,4 +397,4 @@ Proprietary - All rights reserved
 
 ---
 
-**Questions?** Check the [comprehensive documentation](./docs/) or review the [architecture overview](./docs/architecture-overview.md).
+**Questions?** Check the [feature documentation](./docs/features/) or review the [project changelog](./CHANGELOG.md).

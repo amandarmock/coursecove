@@ -54,8 +54,13 @@ model Organization {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  memberships OrganizationMembership[]
-  invitations Invitation[]
+  memberships            OrganizationMembership[]
+  invitations            Invitation[]
+  rolePermissions        RolePermission[]        // F001: Custom permissions per organization
+  appointmentTypes           AppointmentType[]           // F001: Appointment types offered
+  appointments        Appointment[]        // F001: Appointments
+  appointmentTypeInstructors AppointmentTypeInstructor[] // F001: Junction table
+  businessLocations      BusinessLocation[]      // F001: Business location addresses
 
   // Indexes
   @@index([subdomain])
@@ -84,9 +89,9 @@ model User {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  memberships         OrganizationMembership[]
-  invitationsSent     Invitation[] @relation("InvitedBy")
-  invitationsAccepted Invitation[] @relation("AcceptedBy")
+  memberships             OrganizationMembership[]
+  invitationsSent         Invitation[]             @relation("InvitedBy")
+  invitationsAccepted     Invitation[]             @relation("AcceptedBy")
 
   // Indexes
   @@index([clerkUserId])
@@ -118,6 +123,12 @@ model OrganizationMembership {
   // Relations
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // F001: Appointment relations (as participant/creator)
+  studentAppointments      Appointment[]        @relation("StudentAppointments")
+  instructorAppointments   Appointment[]        @relation("InstructorAppointments")
+  createdAppointments      Appointment[]        @relation("CreatedAppointments")
+  qualifiedAppointmentTypes AppointmentTypeInstructor[] @relation("QualifiedInstructors")
 
   // Constraints
   @@unique([organizationId, userId])
@@ -185,10 +196,239 @@ model WebhookEvent {
   processedAt DateTime? @map("processed_at") // When successfully processed
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")  // Soft delete support
 
   // Indexes for efficient queries
   @@index([eventType])
   @@index([status])
   @@index([createdAt])
   @@map("webhook_events")
+}
+
+// ============================================
+// F001: Permission System
+// ============================================
+
+model Permission {
+  id          String   @id @default(cuid())
+
+  // Permission details
+  resource    String   // e.g., "appointment_types", "appointments"
+  action      String   // e.g., "create", "edit", "delete", "publish"
+  description String   // Human-readable description
+
+  // Timestamps
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  rolePermissions RolePermission[]
+
+  // Constraints
+  @@unique([resource, action])
+  @@index([resource])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id             String         @id @default(cuid())
+
+  // Foreign keys
+  role           MembershipRole
+  permissionId   String         @map("permission_id")
+  organizationId String         @map("organization_id")
+
+  // Timestamps
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  // Relations
+  permission     Permission     @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // Constraints - one permission per role per organization
+  @@unique([role, permissionId, organizationId])
+  @@index([role])
+  @@index([organizationId])
+  @@map("role_permissions")
+}
+
+// ============================================
+// F001: Appointment Management
+// ============================================
+
+enum AppointmentTypeStatus {
+  DRAFT
+  PUBLISHED
+  UNPUBLISHED
+}
+
+enum AppointmentTypeCategory {
+  PRIVATE_LESSON
+  APPOINTMENT
+}
+
+enum AppointmentStatus {
+  UNBOOKED
+  BOOKED
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum LocationMode {
+  BUSINESS_LOCATION
+  ONLINE
+  STUDENT_LOCATION
+}
+
+model BusinessLocation {
+  id             String   @id @default(cuid())
+
+  // Foreign keys
+  organizationId String   @map("organization_id")
+
+  // Location details
+  name           String   // e.g., "Studio A", "Downtown Branch"
+  address        String
+  city           String
+  state          String
+  zipCode        String   @map("zip_code")
+  notes          String?  @db.Text // e.g., "Enter through side door", "Free parking in rear"
+
+  // Status
+  isActive       Boolean  @default(true) @map("is_active")
+
+  // Timestamps
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at") // Soft delete
+
+  // Relations
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  appointmentTypes AppointmentType[]
+
+  // Indexes
+  @@index([organizationId])
+  @@index([isActive])
+  @@index([deletedAt])
+  @@map("business_locations")
+}
+
+model AppointmentType {
+  id          String            @id @default(cuid())
+
+  // Foreign keys
+  organizationId String         @map("organization_id")
+
+  // Appointment type details
+  name        String
+  description String?           @db.Text
+  duration    Int               // Duration in minutes
+  status      AppointmentTypeStatus @default(DRAFT)
+  category    AppointmentTypeCategory @default(APPOINTMENT)
+
+  // Location settings
+  locationMode      LocationMode     @default(BUSINESS_LOCATION) @map("location_mode")
+  businessLocationId String?         @map("business_location_id") // If locationMode is BUSINESS_LOCATION
+
+  // Legacy location fields (to be deprecated)
+  defaultIsOnline   Boolean     @default(false) @map("default_is_online")
+  defaultAddress    String?     @map("default_address")
+  defaultVideoLink  String?     @map("default_video_link")
+
+  // Timestamps
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+  deletedAt   DateTime?         @map("deleted_at") // Soft delete
+
+  // Relations
+  organization       Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  businessLocation   BusinessLocation?         @relation(fields: [businessLocationId], references: [id])
+  appointments    Appointment[]
+  instructors        AppointmentTypeInstructor[]
+
+  // Indexes
+  @@index([organizationId])
+  @@index([status])
+  @@index([deletedAt])
+  @@index([businessLocationId])
+  @@map("appointment_types")
+}
+
+model Appointment {
+  id             String        @id @default(cuid())
+
+  // Foreign keys
+  appointmentTypeId  String?       @map("appointment_type_id") // Nullable for ad-hoc appointments
+  organizationId String        @map("organization_id")
+
+  // Participants (OrganizationMembership IDs)
+  studentId      String        @map("student_id")
+  instructorId   String        @map("instructor_id")
+  createdBy      String        @map("created_by")
+
+  // Appointment details (can override appointment type)
+  title          String
+  description    String?       @db.Text
+  duration       Int           // Duration in minutes
+  status         AppointmentStatus @default(UNBOOKED)
+
+  // Location
+  isOnline        Boolean      @map("is_online")
+  videoLink       String?      @map("video_link")
+  locationAddress String?      @map("location_address")
+
+  // Notes
+  notes          String?       @db.Text
+
+  // Optimistic locking
+  version        Int           @default(0)
+
+  // Timestamps
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  deletedAt      DateTime?     @map("deleted_at") // Soft delete
+
+  // Relations
+  appointmentType  AppointmentType?           @relation(fields: [appointmentTypeId], references: [id], onDelete: Restrict)
+  student      OrganizationMembership @relation("StudentAppointments", fields: [studentId], references: [id], onDelete: Restrict)
+  instructor   OrganizationMembership @relation("InstructorAppointments", fields: [instructorId], references: [id], onDelete: Restrict)
+  creator      OrganizationMembership @relation("CreatedAppointments", fields: [createdBy], references: [id], onDelete: Restrict)
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // Indexes
+  @@index([appointmentTypeId])
+  @@index([studentId])
+  @@index([instructorId])
+  @@index([createdBy])
+  @@index([organizationId])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("appointments")
+}
+
+model AppointmentTypeInstructor {
+  id             String                 @id @default(cuid())
+
+  // Foreign keys
+  appointmentTypeId  String                 @map("appointment_type_id")
+  instructorId   String                 @map("instructor_id") // OrganizationMembership ID
+  organizationId String                 @map("organization_id") // For RLS policies
+
+  // Timestamps
+  createdAt      DateTime               @default(now()) @map("created_at")
+
+  // Relations
+  appointmentType    AppointmentType            @relation(fields: [appointmentTypeId], references: [id], onDelete: Cascade)
+  instructor     OrganizationMembership @relation("QualifiedInstructors", fields: [instructorId], references: [id], onDelete: Cascade)
+  organization   Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // Constraints - prevent duplicate assignments
+  @@unique([appointmentTypeId, instructorId])
+  @@index([appointmentTypeId])
+  @@index([instructorId])
+  @@index([organizationId])
+  @@map("appointment_type_instructors")
 }

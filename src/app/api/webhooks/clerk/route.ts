@@ -21,7 +21,7 @@
 
 import { Webhook } from 'svix';
 import { headers } from 'next/headers';
-import { WebhookEvent } from '@clerk/nextjs/server';
+import { WebhookEvent, clerkClient } from '@clerk/nextjs/server';
 import { prisma } from '@/lib/db/prisma';
 import { inngest } from '@/inngest/client';
 
@@ -152,8 +152,59 @@ export async function POST(req: Request) {
       return new Response('OK', { status: 200 });
 
     } catch (inngestError) {
-      console.error('❌ Failed to queue to Inngest:', inngestError);
-      // Last resort: return 500 so Clerk retries
+      console.error('⚠️ Failed to queue to Inngest:', inngestError);
+
+      // For most events, data was likely saved even if the fast path "failed"
+      // (e.g., due to timeout or missing dependencies for membership)
+      // Check if we should return success anyway
+
+      try {
+        // Check if the event was processed successfully
+        const event = await prisma.webhookEvent.findUnique({
+          where: { webhookId: svix_id },
+        });
+
+        if (event?.status === 'completed') {
+          console.log('✓ Event already completed, returning success');
+          return new Response('OK', { status: 200 });
+        }
+
+        // For create events, check if the data actually exists
+        // This handles race conditions where data was saved but status wasn't updated
+        let dataExists = false;
+
+        if (evt.type === 'user.created') {
+          const user = await prisma.user.findUnique({
+            where: { clerkUserId: (evt.data as any).id },
+          });
+          dataExists = !!user;
+        } else if (evt.type === 'organization.created') {
+          const org = await prisma.organization.findUnique({
+            where: { clerkOrganizationId: (evt.data as any).id },
+          });
+          dataExists = !!org;
+        } else if (evt.type === 'organizationMembership.created') {
+          const membership = await prisma.organizationMembership.findUnique({
+            where: { clerkMembershipId: (evt.data as any).id },
+          });
+          dataExists = !!membership;
+        }
+
+        if (dataExists) {
+          console.log('✓ Data exists in database, returning success despite Inngest failure');
+          // Update webhook status since data was saved
+          await prisma.webhookEvent.update({
+            where: { webhookId: svix_id },
+            data: { status: 'completed', processedAt: new Date() },
+          }).catch(() => {});
+          return new Response('OK', { status: 200 });
+        }
+      } catch {
+        // Ignore check errors
+      }
+
+      // Only fail if we truly couldn't process or queue the event
+      // Return 500 so Clerk will retry
       return new Response('Processing failed', { status: 500 });
     }
   }
@@ -254,13 +305,22 @@ async function handleUserUpdated(data: any) {
     (email: any) => email.id === data.primary_email_address_id
   );
 
-  await prisma.user.update({
+  // Use upsert to handle case where user doesn't exist yet
+  await prisma.user.upsert({
     where: { clerkUserId: data.id },
-    data: {
+    update: {
       email: primaryEmail.email_address,
       firstName: data.first_name || '',
       lastName: data.last_name || '',
       avatarUrl: data.image_url,
+    },
+    create: {
+      clerkUserId: data.id,
+      email: primaryEmail.email_address,
+      firstName: data.first_name || '',
+      lastName: data.last_name || '',
+      avatarUrl: data.image_url,
+      status: 'ACTIVE',
     },
   });
 
@@ -300,6 +360,26 @@ async function handleOrganizationCreated(data: any) {
       },
     });
     console.log('✓ Organization created with subdomain:', subdomain);
+
+    // Set default organization logo
+    try {
+      const client = await clerkClient();
+      const logoUrl = `${process.env.NEXT_PUBLIC_APP_URL}/icon.png`;
+      const logoResponse = await fetch(logoUrl);
+
+      if (logoResponse.ok) {
+        const logoBlob = await logoResponse.blob();
+        await client.organizations.updateOrganizationLogo(data.id, {
+          file: logoBlob,
+        });
+        console.log('✓ Organization logo set');
+      } else {
+        console.warn('⚠️ Failed to fetch default logo:', logoResponse.status);
+      }
+    } catch (logoError) {
+      console.warn('⚠️ Failed to set organization logo:', logoError);
+      // Don't fail the webhook - org was created successfully
+    }
   } catch (error: any) {
     if (error.code === 'P2002') {
       console.log('✓ Organization already exists (duplicate webhook)');
@@ -312,11 +392,21 @@ async function handleOrganizationCreated(data: any) {
 async function handleOrganizationUpdated(data: any) {
   console.log('🏢 Updating organization:', data.id);
 
-  await prisma.organization.update({
+  const subdomain = data.slug.replace(/-/g, '');
+
+  // Use upsert to handle case where org doesn't exist yet
+  await prisma.organization.upsert({
     where: { clerkOrganizationId: data.id },
-    data: {
+    update: {
       name: data.name,
       slug: data.slug,
+    },
+    create: {
+      clerkOrganizationId: data.id,
+      name: data.name,
+      slug: data.slug,
+      subdomain: subdomain,
+      status: 'ACTIVE',
     },
   });
 
@@ -367,7 +457,7 @@ async function handleMembershipCreated(data: any) {
 
       const role = data.role === 'org:admin' ? 'SUPER_ADMIN' : 'STUDENT';
 
-      await prisma.organizationMembership.upsert({
+      const membership = await prisma.organizationMembership.upsert({
         where: { clerkMembershipId: data.id },
         update: {},
         create: {
@@ -380,6 +470,41 @@ async function handleMembershipCreated(data: any) {
       });
 
       console.log('✓ Membership created:', user.email, '→', org.name, `(${role})`);
+
+      // Create sample appointment type for new org admins
+      if (role === 'SUPER_ADMIN') {
+        try {
+          // Check if org already has appointment types (avoid duplicates)
+          const existingTypes = await prisma.appointmentType.count({
+            where: { organizationId: org.id },
+          });
+
+          if (existingTypes === 0) {
+            await prisma.appointmentType.create({
+              data: {
+                organizationId: org.id,
+                name: '30-Minute Consultation',
+                description: 'A sample appointment type to help you get started. Feel free to edit or delete this template.',
+                duration: 30,
+                status: 'DRAFT',
+                defaultIsOnline: true,
+                defaultVideoLink: 'https://meet.example.com/your-meeting',
+                instructors: {
+                  create: {
+                    instructorId: membership.id,
+                    organizationId: org.id,
+                  },
+                },
+              },
+            });
+            console.log('✓ Sample appointment type created for new organization');
+          }
+        } catch (appointmentTypeError) {
+          console.warn('⚠️ Failed to create sample appointment type:', appointmentTypeError);
+          // Don't fail the webhook - membership was created successfully
+        }
+      }
+
       return;
 
     } catch (error: any) {
@@ -408,12 +533,53 @@ async function handleMembershipUpdated(data: any) {
 
   const role = data.role === 'org:admin' ? 'SUPER_ADMIN' : 'STUDENT';
 
-  await prisma.organizationMembership.update({
+  // First try to update existing membership
+  const existingMembership = await prisma.organizationMembership.findUnique({
     where: { clerkMembershipId: data.id },
-    data: { role },
   });
 
-  console.log('✓ Membership updated with role:', role);
+  if (existingMembership) {
+    await prisma.organizationMembership.update({
+      where: { clerkMembershipId: data.id },
+      data: { role },
+    });
+    console.log('✓ Membership updated with role:', role);
+    return;
+  }
+
+  // Membership doesn't exist - need to create it
+  // First ensure user and org exist
+  console.log('⚠️ Membership not found, creating...');
+
+  const user = await prisma.user.findUnique({
+    where: { clerkUserId: data.public_user_data.user_id },
+  });
+
+  const org = await prisma.organization.findUnique({
+    where: { clerkOrganizationId: data.organization.id },
+  });
+
+  if (!user || !org) {
+    const missing = [];
+    if (!user) missing.push('user');
+    if (!org) missing.push('organization');
+    throw new Error(
+      `Cannot create membership - missing dependencies: ${missing.join(', ')} - ` +
+      `User: ${data.public_user_data.user_id}, Org: ${data.organization.id}`
+    );
+  }
+
+  await prisma.organizationMembership.create({
+    data: {
+      organizationId: org.id,
+      userId: user.id,
+      role: role,
+      clerkMembershipId: data.id,
+      status: 'ACTIVE',
+    },
+  });
+
+  console.log('✓ Membership created with role:', role);
 }
 
 async function handleMembershipDeleted(data: any) {

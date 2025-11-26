@@ -9,6 +9,9 @@ const isPublicRoute = createRouteMatcher([
     '/api/test-db(.*)', // Remove in production
     '/api/seed-test-data(.*)', // Remove in production
     '/api/test-rls(.*)', // Remove in production
+    '/api/trpc(.*)', // tRPC handles its own auth via protectedProcedure middleware
+    '/dev-tools(.*)', // Dev tools page - only available in development
+    '/api/dev-tools(.*)', // Dev tools API endpoints - only available in development
 ]);
 
 export default clerkMiddleware(async (auth, request) => {
