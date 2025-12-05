@@ -13,6 +13,9 @@
 
 import { inngest } from './client';
 import { prisma } from '@/lib/db/prisma';
+import { subDays } from 'date-fns';
+
+const SOFT_DELETE_RETENTION_DAYS = 30;
 
 /**
  * Process Clerk Webhook Event
@@ -318,11 +321,109 @@ async function handleMembershipUpdated(data: any) {
 }
 
 async function handleMembershipDeleted(data: any) {
-  console.log('[Inngest] Deleting membership:', data.id);
+  console.log('[Inngest] Soft-deleting membership:', data.id);
 
-  await prisma.organizationMembership.deleteMany({
+  // Soft delete: mark as REMOVED instead of hard delete
+  // Preserves qualifications and availability for 30-day restoration window
+  const result = await prisma.organizationMembership.updateMany({
     where: { clerkMembershipId: data.id },
+    data: {
+      status: 'REMOVED',
+      removedAt: new Date(),
+      removedBy: 'clerk_webhook',
+    },
   });
 
-  console.log('[Inngest] Membership deleted from database');
+  if (result.count > 0) {
+    console.log('[Inngest] Membership soft-deleted (30-day grace period)');
+  } else {
+    console.log('[Inngest] Membership already processed or not found');
+  }
 }
+
+// ============================================
+// SCHEDULED CLEANUP JOBS
+// ============================================
+
+/**
+ * Cleanup Removed Memberships
+ *
+ * Runs daily at 2am UTC to permanently delete memberships that have been
+ * in REMOVED status for more than 30 days.
+ *
+ * CASCADE delete handles:
+ * - AppointmentTypeInstructor (qualifications)
+ * - InstructorAvailability (availability blocks)
+ *
+ * Note: Appointments use onDelete: Restrict, so they won't be deleted.
+ * Instructors with active appointments should be handled before this runs.
+ */
+export const cleanupRemovedMemberships = inngest.createFunction(
+  {
+    id: 'cleanup-removed-memberships',
+    retries: 3,
+  },
+  { cron: '0 2 * * *' }, // Daily at 2am UTC
+  async ({ step }) => {
+    console.log('[Inngest] Starting removed memberships cleanup...');
+
+    const cutoffDate = subDays(new Date(), SOFT_DELETE_RETENTION_DAYS);
+
+    // Step 1: Find expired memberships
+    const expiredMemberships = await step.run('find-expired', async () => {
+      return await prisma.organizationMembership.findMany({
+        where: {
+          status: 'REMOVED',
+          removedAt: { lt: cutoffDate },
+        },
+        select: {
+          id: true,
+          removedAt: true,
+          user: {
+            select: {
+              email: true,
+            },
+          },
+          organization: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      });
+    });
+
+    if (expiredMemberships.length === 0) {
+      console.log('[Inngest] No expired memberships to cleanup');
+      return { deleted: 0 };
+    }
+
+    console.log(`[Inngest] Found ${expiredMemberships.length} expired memberships`);
+
+    // Step 2: Delete each expired membership
+    let deletedCount = 0;
+    for (const membership of expiredMemberships) {
+      try {
+        await step.run(`delete-${membership.id}`, async () => {
+          await prisma.organizationMembership.delete({
+            where: { id: membership.id },
+          });
+        });
+        console.log(
+          `[Inngest] Permanently deleted membership: ${membership.user.email} from ${membership.organization.name}`
+        );
+        deletedCount++;
+      } catch (error) {
+        // Log but continue - might be blocked by Restrict constraint (active appointments)
+        console.error(
+          `[Inngest] Failed to delete membership ${membership.id}:`,
+          error instanceof Error ? error.message : 'Unknown error'
+        );
+      }
+    }
+
+    console.log(`[Inngest] Cleanup complete: ${deletedCount}/${expiredMemberships.length} memberships deleted`);
+
+    return { deleted: deletedCount, total: expiredMemberships.length };
+  }
+);

@@ -289,7 +289,7 @@ trpc.appointments.list
               <li>✅ AppointmentStatus enum (6 states)</li>
               <li>✅ Database migration applied</li>
               <li>✅ 12 default permissions seeded</li>
-              <li>✅ 15 RLS policies implemented</li>
+              <li>✅ 31 RLS policies implemented (see supabase/migrations/)</li>
             </ul>
             <h3>🎯 Next Steps (Phase 3):</h3>
             <ul>

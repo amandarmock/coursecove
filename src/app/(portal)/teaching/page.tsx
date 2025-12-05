@@ -61,10 +61,12 @@ export default function TeachingPage() {
   const { data: allAppointmentTypes, isLoading } = trpc.appointmentTypes.list.useQuery({});
 
   // Filter for appointment types this instructor is qualified for
-  const myAppointmentTypes = useMemo(() => {
+  // Note: tRPC types don't include Prisma 'include' fields, so we cast to our local type
+  const myAppointmentTypes = useMemo((): AppointmentType[] => {
     if (!allAppointmentTypes || !currentInstructorId) return [];
 
-    return allAppointmentTypes.filter(type =>
+    const types = allAppointmentTypes as unknown as AppointmentType[];
+    return types.filter(type =>
       type.status === 'PUBLISHED' &&
       type.instructors.some(inst => inst.instructorId === currentInstructorId)
     );

@@ -28,6 +28,17 @@ interface AppointmentType {
   }>;
 }
 
+// Type for instructor members with user relation (tRPC types don't include Prisma includes)
+type InstructorMember = {
+  id: string;
+  user: {
+    firstName: string | null;
+    lastName: string | null;
+    email: string;
+    avatarUrl: string | null;
+  };
+};
+
 interface AppointmentTypeDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -62,7 +73,9 @@ export function AppointmentTypeDialog({
   });
 
   // Map to the format expected by the form
-  const instructors = instructorMembers?.map(member => ({
+  // Cast to InstructorMember[] since tRPC types don't include Prisma include fields
+  const typedInstructorMembers = instructorMembers as unknown as InstructorMember[] | undefined;
+  const instructors = typedInstructorMembers?.map(member => ({
     id: member.id,
     user: {
       firstName: member.user.firstName || '',

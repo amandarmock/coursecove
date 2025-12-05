@@ -487,8 +487,7 @@ async function handleMembershipCreated(data: any) {
                 description: 'A sample appointment type to help you get started. Feel free to edit or delete this template.',
                 duration: 30,
                 status: 'DRAFT',
-                defaultIsOnline: true,
-                defaultVideoLink: 'https://meet.example.com/your-meeting',
+                locationMode: 'ONLINE',
                 instructors: {
                   create: {
                     instructorId: membership.id,
@@ -583,11 +582,22 @@ async function handleMembershipUpdated(data: any) {
 }
 
 async function handleMembershipDeleted(data: any) {
-  console.log('👥 Deleting membership:', data.id);
+  console.log('👥 Soft-deleting membership:', data.id);
 
-  await prisma.organizationMembership.deleteMany({
+  // Soft delete: mark as REMOVED instead of hard delete
+  // Preserves qualifications and availability for 30-day restoration window
+  const result = await prisma.organizationMembership.updateMany({
     where: { clerkMembershipId: data.id },
+    data: {
+      status: 'REMOVED',
+      removedAt: new Date(),
+      removedBy: 'clerk_webhook',
+    },
   });
 
-  console.log('✓ Membership deleted from database');
+  if (result.count > 0) {
+    console.log('✓ Membership soft-deleted (30-day grace period)');
+  } else {
+    console.log('✓ Membership already processed or not found');
+  }
 }

@@ -144,13 +144,12 @@ export default function BusinessLocationsPage() {
       <PageHeader
         title="Business Locations"
         description="Manage your business locations where appointments can be held"
-        action={
-          <Button onClick={handleAdd}>
-            <Plus className="h-4 w-4 mr-2" />
-            Add Location
-          </Button>
-        }
-      />
+      >
+        <Button onClick={handleAdd}>
+          <Plus className="h-4 w-4 mr-2" />
+          Add Location
+        </Button>
+      </PageHeader>
 
       <div className="p-6">
         <div className="mb-4 flex items-center justify-between">

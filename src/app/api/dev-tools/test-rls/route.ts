@@ -85,8 +85,7 @@ export async function POST() {
             name: 'RLS Test Appointment Type',
             description: 'Created for RLS testing',
             duration: 60,
-            defaultIsOnline: true,
-            defaultVideoLink: 'https://example.com/test',
+            locationMode: 'ONLINE',
           },
         });
 

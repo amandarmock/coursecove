@@ -1,7 +1,7 @@
 import { router, protectedProcedure, adminProcedure, instructorProcedure } from '../init';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { AppointmentStatus, AppointmentTypeStatus, MembershipRole } from '@prisma/client';
+import { AppointmentStatus, AppointmentTypeStatus, LocationMode, MembershipRole } from '@prisma/client';
 import {
   sanitizeText,
   sanitizeRichText,
@@ -169,6 +169,9 @@ export const appointmentsRouter = router({
           });
         }
 
+        // Determine location settings based on appointment type's locationMode
+        const isOnline = input.isOnline ?? (appointmentType.locationMode === LocationMode.ONLINE);
+
         // Use appointment type defaults, allow overrides
         appointmentData = {
           title: input.title ? sanitizeText(input.title, 200) : appointmentType.name,
@@ -176,13 +179,9 @@ export const appointmentsRouter = router({
             ? sanitizeRichText(input.description)
             : appointmentType.description,
           duration: input.duration ?? appointmentType.duration,
-          isOnline: input.isOnline ?? appointmentType.defaultIsOnline,
-          videoLink: input.videoLink
-            ? sanitizeUrl(input.videoLink)
-            : appointmentType.defaultVideoLink,
-          locationAddress: input.locationAddress
-            ? sanitizeAddress(input.locationAddress)
-            : appointmentType.defaultAddress,
+          isOnline,
+          videoLink: input.videoLink ? sanitizeUrl(input.videoLink) : null,
+          locationAddress: input.locationAddress ? sanitizeAddress(input.locationAddress) : null,
           appointmentTypeId: input.appointmentTypeId,
         };
       } else {
@@ -437,9 +436,9 @@ export const appointmentsRouter = router({
                 description: appointmentType.description,
                 duration: appointmentType.duration,
                 status: AppointmentStatus.UNBOOKED,
-                isOnline: appointmentType.defaultIsOnline,
-                videoLink: appointmentType.defaultVideoLink,
-                locationAddress: appointmentType.defaultAddress,
+                isOnline: appointmentType.locationMode === LocationMode.ONLINE,
+                videoLink: null,
+                locationAddress: null,
               },
               include: {
                 student: {

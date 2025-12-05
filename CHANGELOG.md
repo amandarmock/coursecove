@@ -5,18 +5,30 @@ All notable changes to CourseCove will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2024-11-25
+## [Unreleased] - 2025-12-04
 
 ### Project Status
-- **F001 (Appointment Management):** 45% complete
-  - ✅ Backend infrastructure (65%)
-  - ✅ Admin features (80%)
-  - 🟡 Instructor features (40%)
-  - ❌ Student features (0%)
-  - ❌ Scheduling/Calendar (0%)
-- **F002 (Booking & Management):** 0% complete - specification pending
+- **F001 (Appointment Type Management):** 100% complete ✅
+- **F002 (Instructor Availability):** 100% complete ✅
+- **F003 (Booking System):** 0% complete - specification pending
 
 ### Added
+
+#### Membership Soft Delete System (F001 Technical Debt Resolution)
+- Enterprise-grade soft delete for organization memberships
+- When Clerk removes a member, status set to `REMOVED` instead of hard delete
+- 30-day restoration window preserving:
+  - Instructor qualifications (AppointmentTypeInstructor records)
+  - Availability schedules (InstructorAvailability records)
+  - Appointment history
+- Admin UI banner on Team page showing removed members with urgency levels:
+  - Yellow (>7 days remaining): Dismissible
+  - Orange (4-7 days remaining): Dismissible, reappears on escalation
+  - Red (≤3 days remaining): Not dismissible
+- Per-admin dismiss state via localStorage
+- New tRPC procedures: `membership.listRemoved`, `membership.restore`, `membership.permanentlyDelete`
+- Daily Inngest cleanup job (`cleanupRemovedMemberships`) runs at 2am UTC
+- Schema additions: `REMOVED` status enum, `removedAt`, `removedBy` fields
 
 #### Business Location Management
 - Complete business location CRUD system with admin UI at `/business/locations`
@@ -113,6 +125,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
    - F002: Redefined as "Booking & Appointment Management" for student features
    - Clear separation between configuration (F001) and usage (F002)
 
+### Removed
+
+#### Legacy Location Fields from AppointmentType
+- Removed `defaultIsOnline`, `defaultAddress`, `defaultVideoLink` fields from AppointmentType model
+- These fields were replaced by `locationMode` enum which defines the location rule
+- Actual location data (video links, addresses) is now collected at the Appointment level (F003)
+- Updated allocation logic to derive `isOnline` from `locationMode` instead of legacy fields
+
 ### Fixed
 - Hydration mismatch errors in layout
 - Missing UI components (form, radio-group) from shadcn
@@ -129,10 +149,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **No Individual Appointment UI**: APIs exist but no frontend
 
 #### Technical Debt
-- Legacy location fields in AppointmentType (to be deprecated):
-  - `defaultIsOnline`
-  - `defaultAddress`
-  - `defaultVideoLink`
 - Need pagination for large appointment lists
 - Mobile responsiveness needs testing
 - Performance optimization needed for instructor queries

@@ -62,8 +62,8 @@ type AppointmentType = {
     instructor: {
       id: string;
       user: {
-        firstName: string;
-        lastName: string;
+        firstName: string | null;
+        lastName: string | null;
         email: string;
       };
     };
@@ -90,8 +90,9 @@ export default function PrivateLessonsPage() {
   const { data: allAppointmentTypes, isLoading } = trpc.appointmentTypes.list.useQuery({});
 
   // Filter for only PRIVATE_LESSON category
+  // Note: tRPC types don't include Prisma 'include' fields, so we cast to our local type
   const appointmentTypes = useMemo(() => {
-    return allAppointmentTypes?.filter(type => type.category === 'PRIVATE_LESSON') || [];
+    return (allAppointmentTypes?.filter(type => type.category === 'PRIVATE_LESSON') || []) as unknown as AppointmentType[];
   }, [allAppointmentTypes]);
 
   const publishMutation = trpc.appointmentTypes.publish.useMutation({
@@ -156,7 +157,7 @@ export default function PrivateLessonsPage() {
   };
 
   const filteredAndSortedTypes = useMemo(() => {
-    let filtered = [...(appointmentTypes || [])];
+    let filtered = [...appointmentTypes];
 
     // Apply status filter
     if (statusFilter !== 'all') {
@@ -267,16 +268,15 @@ export default function PrivateLessonsPage() {
       <PageHeader
         title="Private Lessons"
         description="Set up lesson types that students can book using allocated credits"
-        action={
-          <Button onClick={() => {
-            setEditingAppointmentType(null);
-            setDialogOpen(true);
-          }}>
-            <Plus className="h-4 w-4 mr-2" />
-            Add Lesson Type
-          </Button>
-        }
-      />
+      >
+        <Button onClick={() => {
+          setEditingAppointmentType(null);
+          setDialogOpen(true);
+        }}>
+          <Plus className="h-4 w-4 mr-2" />
+          Add Lesson Type
+        </Button>
+      </PageHeader>
 
       <div className="p-6 space-y-4">
         {/* Filters */}

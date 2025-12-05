@@ -21,8 +21,11 @@ interface OrgSwitcherProps {
 
 export function OrgSwitcher({ userRole }: OrgSwitcherProps) {
   const { organization } = useOrganization();
-  const { organizationList, setActive } = useOrganizationList();
+  const { userMemberships, setActive } = useOrganizationList({ userMemberships: { infinite: true } });
   const { openCreateOrganization } = useClerk();
+
+  // Map userMemberships to the expected format
+  const organizationList = userMemberships.data;
 
   const isAdmin = userRole === MembershipRole.SUPER_ADMIN;
 
@@ -86,7 +89,7 @@ export function OrgSwitcher({ userRole }: OrgSwitcherProps) {
             <DropdownMenuItem
               key={org.organization.id}
               onClick={() => {
-                if (!isCurrentOrg) {
+                if (!isCurrentOrg && setActive) {
                   setActive({ organization: org.organization.id });
                 }
               }}

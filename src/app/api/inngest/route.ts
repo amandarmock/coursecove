@@ -18,12 +18,12 @@
 
 import { serve } from 'inngest/next';
 import { inngest } from '@/inngest/client';
-import { processClerkWebhook } from '@/inngest/functions';
+import { processClerkWebhook, cleanupRemovedMemberships } from '@/inngest/functions';
 
 export const { GET, POST, PUT } = serve({
   client: inngest,
   functions: [
     processClerkWebhook,
-    // Add more functions here as needed
+    cleanupRemovedMemberships, // Daily cleanup of expired soft-deleted memberships
   ],
 });

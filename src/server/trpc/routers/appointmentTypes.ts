@@ -97,10 +97,6 @@ export const appointmentTypesRouter = router({
           category: input.category,
           locationMode: input.locationMode,
           businessLocationId: input.businessLocationId || null,
-          // Set legacy fields for compatibility (will be removed later)
-          defaultIsOnline: input.locationMode === LocationMode.ONLINE,
-          defaultAddress: null,
-          defaultVideoLink: null,
           instructors: {
             create: input.qualifiedInstructorIds.map((instructorId) => ({
               instructorId,
@@ -341,8 +337,6 @@ export const appointmentTypesRouter = router({
       }
       if (input.locationMode !== undefined) {
         updateData.locationMode = input.locationMode;
-        // Update legacy fields for compatibility
-        updateData.defaultIsOnline = input.locationMode === LocationMode.ONLINE;
       }
       if (input.businessLocationId !== undefined) {
         updateData.businessLocationId = input.businessLocationId;

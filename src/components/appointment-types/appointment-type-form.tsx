@@ -47,7 +47,7 @@ const appointmentTypeSchema = z.object({
   name: z.string().min(1, 'Name is required').max(200, 'Name must be 200 characters or less'),
   description: z.string().max(5000, 'Description must be 5000 characters or less').optional(),
   category: z.enum(['PRIVATE_LESSON', 'APPOINTMENT'], {
-    required_error: 'Category is required',
+    error: 'Category is required',
   }),
   duration: z.number().int().min(5, 'Duration must be at least 5 minutes').max(1440, 'Duration must be 1440 minutes or less'),
   locationMode: z.nativeEnum(LocationMode),

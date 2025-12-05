@@ -46,6 +46,7 @@ const isAuthed = t.middleware(({ ctx, next }) => {
 
 /**
  * Role-based authorization middleware factory
+ * Note: This runs after isAuthed, so organizationId is guaranteed to be non-null
  */
 const requireRole = (allowedRoles: MembershipRole[]) =>
   t.middleware(({ ctx, next }) => {
@@ -63,11 +64,48 @@ const requireRole = (allowedRoles: MembershipRole[]) =>
       });
     }
 
-    return next({ ctx });
+    // Pass through the narrowed context from isAuthed middleware
+    return next({
+      ctx: {
+        ...ctx,
+        // These are guaranteed non-null after isAuthed middleware
+        userId: ctx.userId as string,
+        organizationId: ctx.organizationId as string,
+        membershipId: ctx.membershipId as string,
+        role: ctx.role as MembershipRole,
+      },
+    });
   });
 
-// Base authenticated procedure
+// Base authenticated procedure (requires org membership)
 export const protectedProcedure = t.procedure.use(isAuthed);
+
+/**
+ * User-only auth middleware - only requires login, not org membership
+ * Use for profile operations that don't require org context
+ */
+const isUserAuthed = t.middleware(({ ctx, next }) => {
+  if (!ctx.userId) {
+    throw new TRPCError({
+      code: 'UNAUTHORIZED',
+      message: 'You must be logged in to perform this action'
+    });
+  }
+
+  return next({
+    ctx: {
+      prisma: ctx.prisma,
+      userId: ctx.userId,
+      // These may be null if user has no org membership
+      organizationId: ctx.organizationId,
+      membershipId: ctx.membershipId,
+      role: ctx.role,
+    },
+  });
+});
+
+// User-only procedure (doesn't require org membership)
+export const userOnlyProcedure = t.procedure.use(isUserAuthed);
 
 // Role-specific procedures
 export const adminProcedure = protectedProcedure.use(

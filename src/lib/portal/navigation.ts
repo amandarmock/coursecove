@@ -5,9 +5,7 @@ import {
   Users,
   Settings,
   BookOpen,
-  ShoppingBag,
   GraduationCap,
-  User,
   MapPin,
   type LucideIcon,
 } from 'lucide-react';
@@ -40,7 +38,7 @@ export const navigationConfig: NavItem[] = [
     title: 'Teaching',
     href: '/teaching',
     icon: BookOpen,
-    roles: [MembershipRole.SUPER_ADMIN, MembershipRole.ADMIN, MembershipRole.INSTRUCTOR],
+    roles: [MembershipRole.SUPER_ADMIN, MembershipRole.INSTRUCTOR],
   },
   {
     title: 'Business Settings',
@@ -48,6 +46,11 @@ export const navigationConfig: NavItem[] = [
     icon: Settings,
     roles: [MembershipRole.SUPER_ADMIN],
     children: [
+      {
+        title: 'Team',
+        href: '/business/team',
+        icon: Users,
+      },
       {
         title: 'Locations',
         href: '/business/locations',

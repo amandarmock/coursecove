@@ -56,7 +56,7 @@ export default function PortalLayout({
         onClose={() => setSidebarOpen(false)}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Header onMenuClick={() => setSidebarOpen(true)} />
+        <Header onMenuClick={() => setSidebarOpen(true)} userRole={userRole} />
         <main className="flex-1 overflow-y-auto bg-muted/30 p-4 lg:p-6">
           {children}
         </main>

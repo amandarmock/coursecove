@@ -22,6 +22,7 @@ enum MembershipStatus {
   ACTIVE
   SUSPENDED
   DELETED
+  REMOVED // Soft-deleted, restorable for 30 days
 }
 
 enum InvitationStatus {
@@ -61,6 +62,7 @@ model Organization {
   appointments        Appointment[]        // F001: Appointments
   appointmentTypeInstructors AppointmentTypeInstructor[] // F001: Junction table
   businessLocations      BusinessLocation[]      // F001: Business location addresses
+  instructorAvailability InstructorAvailability[] // F002: Instructor availability records
 
   // Indexes
   @@index([subdomain])
@@ -80,6 +82,7 @@ model User {
   firstName String?  @map("first_name")
   lastName  String?  @map("last_name")
   avatarUrl String?  @map("avatar_url")
+  timezone  String   @default("America/New_York") // F002: IANA timezone identifier
 
   // Status
   status    MembershipStatus @default(ACTIVE)
@@ -116,6 +119,10 @@ model OrganizationMembership {
   // Status
   status MembershipStatus @default(ACTIVE)
 
+  // Soft delete tracking (for REMOVED status)
+  removedAt DateTime? @map("removed_at") // When soft-deleted
+  removedBy String?   @map("removed_by") // Who initiated removal (user ID or "clerk_webhook")
+
   // Timestamps
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -129,6 +136,9 @@ model OrganizationMembership {
   instructorAppointments   Appointment[]        @relation("InstructorAppointments")
   createdAppointments      Appointment[]        @relation("CreatedAppointments")
   qualifiedAppointmentTypes AppointmentTypeInstructor[] @relation("QualifiedInstructors")
+
+  // F002: Instructor availability (per-org schedules)
+  availability             InstructorAvailability[]
 
   // Constraints
   @@unique([organizationId, userId])
@@ -333,11 +343,6 @@ model AppointmentType {
   locationMode      LocationMode     @default(BUSINESS_LOCATION) @map("location_mode")
   businessLocationId String?         @map("business_location_id") // If locationMode is BUSINESS_LOCATION
 
-  // Legacy location fields (to be deprecated)
-  defaultIsOnline   Boolean     @default(false) @map("default_is_online")
-  defaultAddress    String?     @map("default_address")
-  defaultVideoLink  String?     @map("default_video_link")
-
   // Timestamps
   createdAt   DateTime          @default(now()) @map("created_at")
   updatedAt   DateTime          @updatedAt @map("updated_at")
@@ -431,4 +436,35 @@ model AppointmentTypeInstructor {
   @@index([instructorId])
   @@index([organizationId])
   @@map("appointment_type_instructors")
+}
+
+// ============================================
+// F002: Instructor Availability
+// ============================================
+
+model InstructorAvailability {
+  id             String   @id @default(cuid())
+
+  // Foreign keys
+  instructorId   String   @map("instructor_id")  // OrganizationMembership ID
+  organizationId String   @map("organization_id")
+
+  // Availability details
+  dayOfWeek      Int      // 0=Sunday, 6=Saturday (JS convention)
+  startTime      DateTime @db.Time @map("start_time") // Wall-clock time (no timezone)
+  endTime        DateTime @db.Time @map("end_time")   // Wall-clock time (no timezone)
+
+  // Timestamps
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  instructor     OrganizationMembership @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+  organization   Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // Indexes
+  @@index([instructorId])
+  @@index([organizationId])
+  @@index([instructorId, dayOfWeek])
+  @@map("instructor_availability")
 }

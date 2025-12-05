@@ -1,13 +1,13 @@
 import DOMPurify from 'isomorphic-dompurify';
 
 /**
- * Sanitization utilities for F001 Appointment Management
+ * Sanitization utilities for Appointment Management
  * Uses isomorphic-dompurify for XSS protection
  */
 
 /**
  * Sanitize plain text - strips ALL HTML tags
- * Use for: name, title, default_address, location_address
+ * Use for: name, title, locationAddress
  *
  * @param input - The string to sanitize
  * @param maxLength - Maximum allowed length (default: 200)
@@ -56,7 +56,7 @@ export function sanitizeRichText(
 
 /**
  * Sanitize and validate URL - ensures HTTPS and blocks dangerous schemes
- * Use for: videoLink, defaultVideoLink
+ * Use for: videoLink
  *
  * @param url - The URL to sanitize
  * @returns Sanitized URL or null if invalid
@@ -102,7 +102,7 @@ export function sanitizeUrl(url: string | null | undefined): string | null {
 
 /**
  * Sanitize address field
- * Use for: defaultAddress, locationAddress
+ * Use for: locationAddress
  *
  * @param input - The address string to sanitize
  * @returns Sanitized address string
