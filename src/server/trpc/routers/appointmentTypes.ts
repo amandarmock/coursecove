@@ -1,14 +1,27 @@
-import { router, adminProcedure, instructorProcedure } from '../init';
+import {
+  router,
+  adminProcedure,
+  instructorProcedure,
+  rateLimitedCreateProcedure,
+  rateLimitedAdminProcedure,
+  rateLimitedDeleteProcedure,
+} from '../init';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { AppointmentTypeStatus, AppointmentTypeCategory, LocationMode } from '@prisma/client';
 import {
-  sanitizeText,
+  sanitizeRequiredText,
   sanitizeRichText,
-  sanitizeUrl,
-  sanitizeAddress,
   isValidDuration,
 } from '@/lib/utils/sanitize';
+import {
+  APPOINTMENT_TYPE_NAME_MAX_LENGTH,
+  APPOINTMENT_TYPE_DESCRIPTION_MAX_LENGTH,
+  APPOINTMENT_DURATION_MIN,
+  APPOINTMENT_DURATION_MAX,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+} from '@/lib/utils/constants';
 import { INSTRUCTOR_CAPABLE_ROLES } from '@/lib/utils/roles';
 
 /**
@@ -18,14 +31,14 @@ import { INSTRUCTOR_CAPABLE_ROLES } from '@/lib/utils/roles';
 export const appointmentTypesRouter = router({
   /**
    * Create a new appointment type
-   * Admin only
+   * Admin only - Rate limited: 10/min
    */
-  create: adminProcedure
+  create: rateLimitedCreateProcedure('appointmentTypes.create')
     .input(
       z.object({
-        name: z.string().min(1).max(200),
-        description: z.string().max(5000).optional(),
-        duration: z.number().int().min(5).max(1440),
+        name: z.string().min(1).max(APPOINTMENT_TYPE_NAME_MAX_LENGTH),
+        description: z.string().max(APPOINTMENT_TYPE_DESCRIPTION_MAX_LENGTH).optional(),
+        duration: z.number().int().min(APPOINTMENT_DURATION_MIN).max(APPOINTMENT_DURATION_MAX),
         category: z.nativeEnum(AppointmentTypeCategory).default(AppointmentTypeCategory.APPOINTMENT),
         locationMode: z.nativeEnum(LocationMode),
         businessLocationId: z.string().optional(),
@@ -37,7 +50,7 @@ export const appointmentTypesRouter = router({
       if (!isValidDuration(input.duration)) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
-          message: 'Duration must be between 5 and 1440 minutes',
+          message: `Duration must be between ${APPOINTMENT_DURATION_MIN} and ${APPOINTMENT_DURATION_MAX} minutes`,
         });
       }
 
@@ -90,7 +103,7 @@ export const appointmentTypesRouter = router({
       const appointmentType = await ctx.prisma.appointmentType.create({
         data: {
           organizationId: ctx.organizationId!,
-          name: sanitizeText(input.name, 200),
+          name: sanitizeRequiredText(input.name, 200, 'Name'),
           description: input.description ? sanitizeRichText(input.description) : null,
           duration: input.duration,
           status: AppointmentTypeStatus.DRAFT,
@@ -130,50 +143,69 @@ export const appointmentTypesRouter = router({
   /**
    * List appointment types for the organization
    * Instructor+ can view
+   * Supports pagination with take/skip parameters
    */
   list: instructorProcedure
     .input(
       z.object({
         includeArchived: z.boolean().default(false),
         category: z.nativeEnum(AppointmentTypeCategory).optional(),
+        take: z.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
+        skip: z.number().int().min(0).default(0),
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      const appointmentTypes = await ctx.prisma.appointmentType.findMany({
-        where: {
-          organizationId: ctx.organizationId,
-          ...(input?.includeArchived ? {} : { deletedAt: null }),
-          ...(input?.category ? { category: input.category } : {}),
-        },
-        include: {
-          businessLocation: true,
-          instructors: {
-            include: {
-              instructor: {
-                include: {
-                  user: {
-                    select: {
-                      firstName: true,
-                      lastName: true,
-                      email: true,
+      const take = input?.take ?? DEFAULT_PAGE_SIZE;
+      const skip = input?.skip ?? 0;
+
+      const where = {
+        organizationId: ctx.organizationId,
+        ...(input?.includeArchived ? {} : { deletedAt: null }),
+        ...(input?.category ? { category: input.category } : {}),
+      };
+
+      const [appointmentTypes, total] = await ctx.prisma.$transaction([
+        ctx.prisma.appointmentType.findMany({
+          where,
+          include: {
+            businessLocation: true,
+            instructors: {
+              include: {
+                instructor: {
+                  include: {
+                    user: {
+                      select: {
+                        firstName: true,
+                        lastName: true,
+                        email: true,
+                      },
                     },
                   },
                 },
               },
             },
-          },
-          _count: {
-            select: {
-              appointments: true,
+            _count: {
+              select: {
+                appointments: true,
+              },
             },
           },
-        },
-        orderBy: {
-          name: 'asc',
-        },
-      });
+          orderBy: {
+            name: 'asc',
+          },
+          take,
+          skip,
+        }),
+        ctx.prisma.appointmentType.count({ where }),
+      ]);
 
-      return appointmentTypes;
+      return {
+        items: appointmentTypes,
+        total,
+        take,
+        skip,
+        hasMore: skip + appointmentTypes.length < total,
+      };
     }),
 
   /**
@@ -228,15 +260,16 @@ export const appointmentTypesRouter = router({
 
   /**
    * Update an appointment type
-   * Admin only
+   * Admin only - Rate limited: 30/min
    */
-  update: adminProcedure
+  update: rateLimitedAdminProcedure('appointmentTypes.update')
     .input(
       z.object({
         id: z.string(),
-        name: z.string().min(1).max(200).optional(),
-        description: z.string().max(5000).optional().nullable(),
-        duration: z.number().int().min(5).max(1440).optional(),
+        version: z.number().int(), // Required for optimistic locking
+        name: z.string().min(1).max(APPOINTMENT_TYPE_NAME_MAX_LENGTH).optional(),
+        description: z.string().max(APPOINTMENT_TYPE_DESCRIPTION_MAX_LENGTH).optional().nullable(),
+        duration: z.number().int().min(APPOINTMENT_DURATION_MIN).max(APPOINTMENT_DURATION_MAX).optional(),
         category: z.nativeEnum(AppointmentTypeCategory).optional(),
         locationMode: z.nativeEnum(LocationMode).optional(),
         businessLocationId: z.string().optional().nullable(),
@@ -259,11 +292,27 @@ export const appointmentTypesRouter = router({
         });
       }
 
+      // Optimistic locking - check version hasn't changed
+      if (existing.version !== input.version) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'This appointment type was modified by another user. Please refresh and try again.',
+        });
+      }
+
+      // Validate instructor count - appointment types must have at least one instructor
+      if (input.qualifiedInstructorIds !== undefined && input.qualifiedInstructorIds.length === 0) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Appointment types must have at least one qualified instructor',
+        });
+      }
+
       // Validate duration if provided
       if (input.duration !== undefined && !isValidDuration(input.duration)) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
-          message: 'Duration must be between 5 and 1440 minutes',
+          message: `Duration must be between ${APPOINTMENT_DURATION_MIN} and ${APPOINTMENT_DURATION_MAX} minutes`,
         });
       }
 
@@ -324,7 +373,7 @@ export const appointmentTypesRouter = router({
       const updateData: Record<string, unknown> = {};
 
       if (input.name !== undefined) {
-        updateData.name = sanitizeText(input.name, 200);
+        updateData.name = sanitizeRequiredText(input.name, 200, 'Name');
       }
       if (input.description !== undefined) {
         updateData.description = input.description ? sanitizeRichText(input.description) : null;
@@ -341,6 +390,9 @@ export const appointmentTypesRouter = router({
       if (input.businessLocationId !== undefined) {
         updateData.businessLocationId = input.businessLocationId;
       }
+
+      // Always increment version on update (optimistic locking)
+      updateData.version = { increment: 1 };
 
       // Update appointment type and instructors in transaction
       const appointmentType = await ctx.prisma.$transaction(async (tx) => {
@@ -391,9 +443,9 @@ export const appointmentTypesRouter = router({
 
   /**
    * Publish an appointment type
-   * Admin only - DRAFT/UNPUBLISHED -> PUBLISHED
+   * Admin only - DRAFT/UNPUBLISHED -> PUBLISHED - Rate limited: 30/min
    */
-  publish: adminProcedure
+  publish: rateLimitedAdminProcedure('appointmentTypes.publish')
     .input(
       z.object({
         id: z.string(),
@@ -448,9 +500,9 @@ export const appointmentTypesRouter = router({
 
   /**
    * Unpublish an appointment type
-   * Admin only - PUBLISHED -> UNPUBLISHED
+   * Admin only - PUBLISHED -> UNPUBLISHED - Rate limited: 30/min
    */
-  unpublish: adminProcedure
+  unpublish: rateLimitedAdminProcedure('appointmentTypes.unpublish')
     .input(
       z.object({
         id: z.string(),
@@ -505,9 +557,9 @@ export const appointmentTypesRouter = router({
 
   /**
    * Archive (soft delete) an appointment type
-   * Admin only - Cannot archive PUBLISHED types
+   * Admin only - Cannot archive PUBLISHED types - Rate limited: 20/min
    */
-  archive: adminProcedure
+  archive: rateLimitedDeleteProcedure('appointmentTypes.archive')
     .input(
       z.object({
         id: z.string(),
@@ -525,6 +577,22 @@ export const appointmentTypesRouter = router({
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Appointment type not found',
+        });
+      }
+
+      // Check for active appointments before allowing archive
+      const activeAppointments = await ctx.prisma.appointment.count({
+        where: {
+          appointmentTypeId: input.id,
+          status: { in: ['BOOKED', 'SCHEDULED', 'IN_PROGRESS'] },
+          deletedAt: null,
+        },
+      });
+
+      if (activeAppointments > 0) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `Cannot archive: ${activeAppointments} active appointment(s) exist. Cancel or complete them first.`,
         });
       }
 
@@ -548,5 +616,86 @@ export const appointmentTypesRouter = router({
       });
 
       return { success: true };
+    }),
+
+  /**
+   * Unarchive (restore) an archived appointment type
+   * Admin only - Sets deletedAt to null, status returns to DRAFT - Rate limited: 20/min
+   */
+  unarchive: rateLimitedDeleteProcedure('appointmentTypes.unarchive')
+    .input(
+      z.object({
+        id: z.string(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const appointmentType = await ctx.prisma.appointmentType.findFirst({
+        where: {
+          id: input.id,
+          organizationId: ctx.organizationId,
+        },
+      });
+
+      if (!appointmentType) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Appointment type not found',
+        });
+      }
+
+      if (!appointmentType.deletedAt) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Appointment type is not archived',
+        });
+      }
+
+      // Verify business location is still valid if this type uses one
+      if (appointmentType.businessLocationId) {
+        const businessLocation = await ctx.prisma.businessLocation.findFirst({
+          where: {
+            id: appointmentType.businessLocationId,
+            organizationId: ctx.organizationId,
+            isActive: true,
+            deletedAt: null,
+          },
+        });
+
+        if (!businessLocation) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Cannot restore: the associated business location is no longer active or has been deleted',
+          });
+        }
+      }
+
+      // Restore the appointment type with DRAFT status
+      const updated = await ctx.prisma.appointmentType.update({
+        where: { id: input.id },
+        data: {
+          deletedAt: null,
+          status: AppointmentTypeStatus.DRAFT, // Reset to DRAFT on unarchive
+        },
+        include: {
+          businessLocation: true,
+          instructors: {
+            include: {
+              instructor: {
+                include: {
+                  user: {
+                    select: {
+                      firstName: true,
+                      lastName: true,
+                      email: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      return updated;
     }),
 });

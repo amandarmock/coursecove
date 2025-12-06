@@ -15,6 +15,7 @@ interface AppointmentType {
   name: string;
   description: string | null;
   duration: number;
+  version: number; // For optimistic locking
   category: 'PRIVATE_LESSON' | 'APPOINTMENT';
   locationMode: 'BUSINESS_LOCATION' | 'ONLINE' | 'STUDENT_LOCATION';
   businessLocationId: string | null;
@@ -86,7 +87,7 @@ export function AppointmentTypeDialog({
   })) || [];
 
   // Map business locations to the format expected by the form
-  const mappedBusinessLocations = businessLocations?.map(location => ({
+  const mappedBusinessLocations = businessLocations?.items?.map(location => ({
     id: location.id,
     name: location.name,
     address: location.address,
@@ -117,6 +118,7 @@ export function AppointmentTypeDialog({
     if (isEdit && appointmentType) {
       updateMutation.mutate({
         id: appointmentType.id,
+        version: appointmentType.version, // Required for optimistic locking
         name: data.name,
         description: data.description || null,
         category: data.category,

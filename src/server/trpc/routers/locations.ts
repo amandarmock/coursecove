@@ -1,7 +1,22 @@
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure } from '../init';
+import {
+  router,
+  protectedProcedure,
+  rateLimitedCreateProcedure,
+  rateLimitedAdminProcedure,
+  rateLimitedDeleteProcedure,
+} from '../init';
 import { TRPCError } from '@trpc/server';
-import { LocationMode } from '@prisma/client';
+import {
+  LOCATION_NAME_MAX_LENGTH,
+  LOCATION_ADDRESS_MAX_LENGTH,
+  LOCATION_CITY_MAX_LENGTH,
+  LOCATION_STATE_MAX_LENGTH,
+  LOCATION_ZIP_MAX_LENGTH,
+  LOCATION_NOTES_MAX_LENGTH,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+} from '@/lib/utils/constants';
 
 /**
  * Business Locations Router
@@ -10,15 +25,20 @@ import { LocationMode } from '@prisma/client';
 export const locationsRouter = router({
   /**
    * List all business locations for the organization
+   * Supports pagination with take/skip parameters
    */
   list: protectedProcedure
     .input(
       z.object({
         includeInactive: z.boolean().optional().default(false),
+        take: z.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
+        skip: z.number().int().min(0).default(0),
       }).optional()
     )
     .query(async ({ ctx, input }) => {
       const { organizationId, prisma } = ctx;
+      const take = input?.take ?? DEFAULT_PAGE_SIZE;
+      const skip = input?.skip ?? 0;
 
       const where = {
         organizationId,
@@ -26,15 +46,26 @@ export const locationsRouter = router({
         ...(input?.includeInactive ? {} : { isActive: true }),
       };
 
-      const locations = await prisma.businessLocation.findMany({
-        where,
-        orderBy: [
-          { isActive: 'desc' },
-          { name: 'asc' },
-        ],
-      });
+      const [locations, total] = await prisma.$transaction([
+        prisma.businessLocation.findMany({
+          where,
+          orderBy: [
+            { isActive: 'desc' },
+            { name: 'asc' },
+          ],
+          take,
+          skip,
+        }),
+        prisma.businessLocation.count({ where }),
+      ]);
 
-      return locations;
+      return {
+        items: locations,
+        total,
+        take,
+        skip,
+        hasMore: skip + locations.length < total,
+      };
     }),
 
   /**
@@ -65,16 +96,17 @@ export const locationsRouter = router({
 
   /**
    * Create a new business location
+   * Admin only - Rate limited: 10/min
    */
-  create: adminProcedure
+  create: rateLimitedCreateProcedure('locations.create')
     .input(
       z.object({
-        name: z.string().min(1, 'Name is required').max(100),
-        address: z.string().min(1, 'Address is required').max(200),
-        city: z.string().min(1, 'City is required').max(100),
-        state: z.string().min(1, 'State is required').max(50),
-        zipCode: z.string().min(1, 'Zip code is required').max(20),
-        notes: z.string().max(500).optional(),
+        name: z.string().min(1, 'Name is required').max(LOCATION_NAME_MAX_LENGTH),
+        address: z.string().min(1, 'Address is required').max(LOCATION_ADDRESS_MAX_LENGTH),
+        city: z.string().min(1, 'City is required').max(LOCATION_CITY_MAX_LENGTH),
+        state: z.string().min(1, 'State is required').max(LOCATION_STATE_MAX_LENGTH),
+        zipCode: z.string().min(1, 'Zip code is required').max(LOCATION_ZIP_MAX_LENGTH),
+        notes: z.string().max(LOCATION_NOTES_MAX_LENGTH).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -108,17 +140,18 @@ export const locationsRouter = router({
 
   /**
    * Update a business location
+   * Admin only - Rate limited: 30/min
    */
-  update: adminProcedure
+  update: rateLimitedAdminProcedure('locations.update')
     .input(
       z.object({
         id: z.string(),
-        name: z.string().min(1, 'Name is required').max(100),
-        address: z.string().min(1, 'Address is required').max(200),
-        city: z.string().min(1, 'City is required').max(100),
-        state: z.string().min(1, 'State is required').max(50),
-        zipCode: z.string().min(1, 'Zip code is required').max(20),
-        notes: z.string().max(500).optional().nullable(),
+        name: z.string().min(1, 'Name is required').max(LOCATION_NAME_MAX_LENGTH),
+        address: z.string().min(1, 'Address is required').max(LOCATION_ADDRESS_MAX_LENGTH),
+        city: z.string().min(1, 'City is required').max(LOCATION_CITY_MAX_LENGTH),
+        state: z.string().min(1, 'State is required').max(LOCATION_STATE_MAX_LENGTH),
+        zipCode: z.string().min(1, 'Zip code is required').max(LOCATION_ZIP_MAX_LENGTH),
+        notes: z.string().max(LOCATION_NOTES_MAX_LENGTH).optional().nullable(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -173,8 +206,9 @@ export const locationsRouter = router({
 
   /**
    * Toggle active status of a business location
+   * Admin only - Rate limited: 30/min
    */
-  toggleActive: adminProcedure
+  toggleActive: rateLimitedAdminProcedure('locations.toggleActive')
     .input(
       z.object({
         id: z.string(),
@@ -207,14 +241,14 @@ export const locationsRouter = router({
             businessLocationId: input.id,
             organizationId,
             deletedAt: null,
-            status: 'PUBLISHED',
+            // Check ALL non-archived types, not just PUBLISHED
           },
         });
 
         if (appointmentTypesUsingLocation > 0) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
-            message: `Cannot deactivate location. ${appointmentTypesUsingLocation} published appointment type(s) are using this location.`,
+            message: `Cannot deactivate location. ${appointmentTypesUsingLocation} appointment type(s) are using this location.`,
           });
         }
       }
@@ -229,8 +263,9 @@ export const locationsRouter = router({
 
   /**
    * Soft delete a business location
+   * Admin only - Rate limited: 20/min
    */
-  delete: adminProcedure
+  delete: rateLimitedDeleteProcedure('locations.delete')
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const { organizationId, prisma } = ctx;

@@ -48,6 +48,7 @@ type AppointmentType = {
   name: string;
   description: string | null;
   duration: number;
+  version: number; // For optimistic locking
   category: 'PRIVATE_LESSON' | 'APPOINTMENT';
   status: 'DRAFT' | 'PUBLISHED' | 'UNPUBLISHED';
   locationMode: 'BUSINESS_LOCATION' | 'ONLINE' | 'STUDENT_LOCATION';
@@ -92,7 +93,7 @@ export default function AppointmentsPage() {
   // Filter for only APPOINTMENT category
   // Note: tRPC types don't include Prisma 'include' fields, so we cast to our local type
   const appointmentTypes = useMemo(() => {
-    return (allAppointmentTypes?.filter(type => type.category === 'APPOINTMENT') || []) as unknown as AppointmentType[];
+    return (allAppointmentTypes?.items?.filter(type => type.category === 'APPOINTMENT') || []) as unknown as AppointmentType[];
   }, [allAppointmentTypes]);
 
   const publishMutation = trpc.appointmentTypes.publish.useMutation({
@@ -439,7 +440,7 @@ export default function AppointmentsPage() {
                             <Pencil className="h-4 w-4 mr-2" />
                             Edit
                           </DropdownMenuItem>
-                          {type.status === 'DRAFT' && (
+                          {(type.status === 'DRAFT' || type.status === 'UNPUBLISHED') && (
                             <DropdownMenuItem onClick={() => publishMutation.mutate({ id: type.id })}>
                               <Eye className="h-4 w-4 mr-2" />
                               Publish

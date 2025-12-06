@@ -2,6 +2,12 @@ import { initTRPC, TRPCError } from '@trpc/server';
 import { Context } from './context';
 import SuperJSON from 'superjson';
 import { MembershipRole } from '@prisma/client';
+import {
+  checkRateLimit,
+  createRateLimitKey,
+  RATE_LIMITS,
+  type RateLimitConfig,
+} from '@/lib/utils/rate-limit';
 
 // Initialize tRPC with context type
 const t = initTRPC.context<Context>().create({
@@ -123,3 +129,58 @@ export const studentProcedure = protectedProcedure.use(
 export const guardianProcedure = protectedProcedure.use(
   requireRole([MembershipRole.SUPER_ADMIN, MembershipRole.GUARDIAN])
 );
+
+// =============================================================================
+// Rate Limiting Middleware
+// =============================================================================
+
+/**
+ * Rate limiting middleware factory
+ * Applies rate limits based on userId and action name
+ *
+ * @param config - Rate limit configuration (limit & windowMs)
+ * @param action - Action identifier for the rate limit key
+ */
+const withRateLimit = (config: RateLimitConfig, action: string) =>
+  t.middleware(({ ctx, next }) => {
+    if (!ctx.userId) {
+      throw new TRPCError({
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required for rate limiting',
+      });
+    }
+
+    const key = createRateLimitKey(ctx.userId, action);
+    const result = checkRateLimit(key, config);
+
+    if (!result.success) {
+      const resetIn = Math.ceil((result.resetAt - Date.now()) / 1000);
+      throw new TRPCError({
+        code: 'TOO_MANY_REQUESTS',
+        message: `Rate limit exceeded. Try again in ${resetIn} seconds.`,
+      });
+    }
+
+    return next();
+  });
+
+/**
+ * Rate-limited admin procedure for standard mutations
+ * 30 requests per minute
+ */
+export const rateLimitedAdminProcedure = (action: string) =>
+  adminProcedure.use(withRateLimit(RATE_LIMITS.MUTATION, action));
+
+/**
+ * Rate-limited admin procedure for create operations
+ * 10 requests per minute
+ */
+export const rateLimitedCreateProcedure = (action: string) =>
+  adminProcedure.use(withRateLimit(RATE_LIMITS.CREATE, action));
+
+/**
+ * Rate-limited admin procedure for delete/archive operations
+ * 20 requests per minute
+ */
+export const rateLimitedDeleteProcedure = (action: string) =>
+  adminProcedure.use(withRateLimit(RATE_LIMITS.DELETE, action));

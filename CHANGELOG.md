@@ -30,6 +30,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Daily Inngest cleanup job (`cleanupRemovedMemberships`) runs at 2am UTC
 - Schema additions: `REMOVED` status enum, `removedAt`, `removedBy` fields
 
+#### F001 Critical Data Integrity Fixes
+- **Optimistic Locking**: Added `version` field to AppointmentType model
+  - Version check before updates; throws CONFLICT error if stale
+  - Version auto-increments on each successful update
+  - UI passes version from fetched data to prevent concurrent edit conflicts
+- **Archive Protection**: Cannot archive appointment types with active appointments
+  - Checks for BOOKED/SCHEDULED/IN_PROGRESS appointments before archiving
+  - Returns count of active appointments in error message
+- **Instructor Count Validation**: Cannot remove all instructors from appointment types
+  - Update procedure validates at least 1 instructor when modifying instructor list
+
+#### F001 High Priority Validation Fixes
+- **Location Deactivation**: Now checks ALL non-archived appointment types (not just PUBLISHED)
+  - Removed `status: 'PUBLISHED'` filter from `toggleActive` procedure
+  - Prevents deactivating locations used by DRAFT or UNPUBLISHED types
+- **Post-Sanitization Validation**: Added `sanitizeRequiredText` helper
+  - Throws TRPCError (BAD_REQUEST) if sanitized result is empty
+  - Catches whitespace-only inputs that would become empty strings
+  - Used for required fields like `name` in appointment type create/update
+- **RLS Archive Visibility**: Instructors can now see archived appointment types they were assigned to
+  - New migration splits `appointment_types_select_own_org` into two policies
+  - `appointment_types_select_active`: All org members see non-deleted types
+  - `appointment_types_select_archived_for_instructors`: Instructors see archived types they taught
+
 #### Business Location Management
 - Complete business location CRUD system with admin UI at `/business/locations`
 - Support for multiple business locations per organization

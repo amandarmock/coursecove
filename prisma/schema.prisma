@@ -323,6 +323,7 @@ model BusinessLocation {
   @@index([organizationId])
   @@index([isActive])
   @@index([deletedAt])
+  @@index([organizationId, isActive, deletedAt]) // Compound index for common queries
   @@map("business_locations")
 }
 
@@ -343,6 +344,9 @@ model AppointmentType {
   locationMode      LocationMode     @default(BUSINESS_LOCATION) @map("location_mode")
   businessLocationId String?         @map("business_location_id") // If locationMode is BUSINESS_LOCATION
 
+  // Optimistic locking
+  version     Int               @default(0)
+
   // Timestamps
   createdAt   DateTime          @default(now()) @map("created_at")
   updatedAt   DateTime          @updatedAt @map("updated_at")
@@ -359,6 +363,8 @@ model AppointmentType {
   @@index([status])
   @@index([deletedAt])
   @@index([businessLocationId])
+  @@index([organizationId, status, deletedAt]) // Compound index for common queries
+  @@index([organizationId, category, deletedAt]) // Compound index for category filtering
   @@map("appointment_types")
 }
 

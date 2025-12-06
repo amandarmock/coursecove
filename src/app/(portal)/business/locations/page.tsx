@@ -167,7 +167,7 @@ export default function BusinessLocationsPage() {
             </label>
           </div>
           <div className="text-sm text-muted-foreground">
-            {locations?.length || 0} location{locations?.length !== 1 ? 's' : ''}
+            {locations?.items?.length || 0} location{locations?.items?.length !== 1 ? 's' : ''}
           </div>
         </div>
 
@@ -184,7 +184,7 @@ export default function BusinessLocationsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {locations?.length === 0 ? (
+              {locations?.items?.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                     <MapPin className="h-8 w-8 mx-auto mb-2 text-muted-foreground/50" />
@@ -197,7 +197,7 @@ export default function BusinessLocationsPage() {
                   </TableCell>
                 </TableRow>
               ) : (
-                locations?.map((location) => (
+                locations?.items?.map((location) => (
                   <TableRow key={location.id}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">

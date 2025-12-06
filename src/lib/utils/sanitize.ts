@@ -1,4 +1,14 @@
 import DOMPurify from 'isomorphic-dompurify';
+import { TRPCError } from '@trpc/server';
+import {
+  APPOINTMENT_TYPE_NAME_MAX_LENGTH,
+  APPOINTMENT_TYPE_DESCRIPTION_MAX_LENGTH,
+  LOCATION_ADDRESS_MAX_LENGTH,
+  APPOINTMENT_DURATION_MIN,
+  APPOINTMENT_DURATION_MAX,
+  BULK_QUANTITY_MIN,
+  BULK_QUANTITY_MAX,
+} from './constants';
 
 /**
  * Sanitization utilities for Appointment Management
@@ -15,7 +25,7 @@ import DOMPurify from 'isomorphic-dompurify';
  */
 export function sanitizeText(
   input: string | null | undefined,
-  maxLength: number = 200
+  maxLength: number = APPOINTMENT_TYPE_NAME_MAX_LENGTH
 ): string {
   if (!input) return '';
 
@@ -31,6 +41,34 @@ export function sanitizeText(
 }
 
 /**
+ * Sanitize plain text and validate it's not empty
+ * Use for required fields like: name, title
+ * Throws TRPCError if result is empty (whitespace-only input)
+ *
+ * @param input - The string to sanitize
+ * @param maxLength - Maximum allowed length (default: 200)
+ * @param fieldName - Optional field name for error message
+ * @returns Sanitized non-empty string
+ * @throws TRPCError with BAD_REQUEST if result is empty
+ */
+export function sanitizeRequiredText(
+  input: string,
+  maxLength: number = APPOINTMENT_TYPE_NAME_MAX_LENGTH,
+  fieldName: string = 'Input'
+): string {
+  const sanitized = sanitizeText(input, maxLength);
+
+  if (sanitized.length === 0) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `${fieldName} cannot be empty or whitespace-only`,
+    });
+  }
+
+  return sanitized;
+}
+
+/**
  * Sanitize rich text - allows basic formatting tags
  * Use for: description, notes
  *
@@ -40,7 +78,7 @@ export function sanitizeText(
  */
 export function sanitizeRichText(
   input: string | null | undefined,
-  maxLength: number = 5000
+  maxLength: number = APPOINTMENT_TYPE_DESCRIPTION_MAX_LENGTH
 ): string {
   if (!input) return '';
 
@@ -108,7 +146,7 @@ export function sanitizeUrl(url: string | null | undefined): string | null {
  * @returns Sanitized address string
  */
 export function sanitizeAddress(input: string | null | undefined): string {
-  return sanitizeText(input, 500);
+  return sanitizeText(input, LOCATION_ADDRESS_MAX_LENGTH);
 }
 
 /**
@@ -118,7 +156,7 @@ export function sanitizeAddress(input: string | null | undefined): string {
  * @returns True if valid, false otherwise
  */
 export function isValidDuration(duration: number): boolean {
-  return Number.isInteger(duration) && duration >= 5 && duration <= 1440;
+  return Number.isInteger(duration) && duration >= APPOINTMENT_DURATION_MIN && duration <= APPOINTMENT_DURATION_MAX;
 }
 
 /**
@@ -128,5 +166,5 @@ export function isValidDuration(duration: number): boolean {
  * @returns True if valid, false otherwise
  */
 export function isValidQuantity(quantity: number): boolean {
-  return Number.isInteger(quantity) && quantity >= 1 && quantity <= 100;
+  return Number.isInteger(quantity) && quantity >= BULK_QUANTITY_MIN && quantity <= BULK_QUANTITY_MAX;
 }

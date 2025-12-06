@@ -18,12 +18,20 @@
 
 import { serve } from 'inngest/next';
 import { inngest } from '@/inngest/client';
-import { processClerkWebhook, cleanupRemovedMemberships } from '@/inngest/functions';
+import {
+  processClerkWebhook,
+  cleanupRemovedMemberships,
+  cleanupArchivedAppointmentTypes,
+  cleanupDeletedBusinessLocations,
+} from '@/inngest/functions';
 
 export const { GET, POST, PUT } = serve({
   client: inngest,
   functions: [
     processClerkWebhook,
-    cleanupRemovedMemberships, // Daily cleanup of expired soft-deleted memberships
+    // Daily GDPR cleanup jobs (30-day retention)
+    cleanupRemovedMemberships,          // 2:00am UTC
+    cleanupArchivedAppointmentTypes,    // 3:00am UTC
+    cleanupDeletedBusinessLocations,    // 3:30am UTC
   ],
 });

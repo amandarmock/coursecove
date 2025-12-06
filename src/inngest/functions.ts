@@ -427,3 +427,156 @@ export const cleanupRemovedMemberships = inngest.createFunction(
     return { deleted: deletedCount, total: expiredMemberships.length };
   }
 );
+
+/**
+ * Cleanup Archived Appointment Types
+ *
+ * Runs daily at 3am UTC to permanently delete appointment types that have been
+ * soft-deleted (archived) for more than 30 days.
+ *
+ * GDPR Compliance: Ensures data is not retained indefinitely after deletion.
+ *
+ * CASCADE delete handles:
+ * - AppointmentTypeInstructor (instructor qualifications)
+ *
+ * Note: Appointments reference AppointmentType with onDelete: SetNull,
+ * so historical appointments are preserved with null appointmentTypeId.
+ */
+export const cleanupArchivedAppointmentTypes = inngest.createFunction(
+  {
+    id: 'cleanup-archived-appointment-types',
+    retries: 3,
+  },
+  { cron: '0 3 * * *' }, // Daily at 3am UTC
+  async ({ step }) => {
+    console.log('[Inngest] Starting archived appointment types cleanup...');
+
+    const cutoffDate = subDays(new Date(), SOFT_DELETE_RETENTION_DAYS);
+
+    // Step 1: Find expired archived types
+    const expiredTypes = await step.run('find-expired-types', async () => {
+      return await prisma.appointmentType.findMany({
+        where: {
+          deletedAt: { lt: cutoffDate },
+        },
+        select: {
+          id: true,
+          name: true,
+          deletedAt: true,
+          organization: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      });
+    });
+
+    if (expiredTypes.length === 0) {
+      console.log('[Inngest] No expired appointment types to cleanup');
+      return { deleted: 0 };
+    }
+
+    console.log(`[Inngest] Found ${expiredTypes.length} expired appointment types`);
+
+    // Step 2: Delete each expired type
+    let deletedCount = 0;
+    for (const type of expiredTypes) {
+      try {
+        await step.run(`delete-type-${type.id}`, async () => {
+          await prisma.appointmentType.delete({
+            where: { id: type.id },
+          });
+        });
+        console.log(
+          `[Inngest] Permanently deleted appointment type: "${type.name}" from ${type.organization.name}`
+        );
+        deletedCount++;
+      } catch (error) {
+        console.error(
+          `[Inngest] Failed to delete appointment type ${type.id}:`,
+          error instanceof Error ? error.message : 'Unknown error'
+        );
+      }
+    }
+
+    console.log(`[Inngest] Cleanup complete: ${deletedCount}/${expiredTypes.length} appointment types deleted`);
+
+    return { deleted: deletedCount, total: expiredTypes.length };
+  }
+);
+
+/**
+ * Cleanup Deleted Business Locations
+ *
+ * Runs daily at 3:30am UTC to permanently delete business locations that have been
+ * soft-deleted for more than 30 days.
+ *
+ * GDPR Compliance: Ensures data is not retained indefinitely after deletion.
+ *
+ * Note: Business locations can only be soft-deleted if no appointment types use them,
+ * so this is safe to hard delete.
+ */
+export const cleanupDeletedBusinessLocations = inngest.createFunction(
+  {
+    id: 'cleanup-deleted-business-locations',
+    retries: 3,
+  },
+  { cron: '30 3 * * *' }, // Daily at 3:30am UTC
+  async ({ step }) => {
+    console.log('[Inngest] Starting deleted business locations cleanup...');
+
+    const cutoffDate = subDays(new Date(), SOFT_DELETE_RETENTION_DAYS);
+
+    // Step 1: Find expired deleted locations
+    const expiredLocations = await step.run('find-expired-locations', async () => {
+      return await prisma.businessLocation.findMany({
+        where: {
+          deletedAt: { lt: cutoffDate },
+        },
+        select: {
+          id: true,
+          name: true,
+          deletedAt: true,
+          organization: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      });
+    });
+
+    if (expiredLocations.length === 0) {
+      console.log('[Inngest] No expired business locations to cleanup');
+      return { deleted: 0 };
+    }
+
+    console.log(`[Inngest] Found ${expiredLocations.length} expired business locations`);
+
+    // Step 2: Delete each expired location
+    let deletedCount = 0;
+    for (const location of expiredLocations) {
+      try {
+        await step.run(`delete-location-${location.id}`, async () => {
+          await prisma.businessLocation.delete({
+            where: { id: location.id },
+          });
+        });
+        console.log(
+          `[Inngest] Permanently deleted business location: "${location.name}" from ${location.organization.name}`
+        );
+        deletedCount++;
+      } catch (error) {
+        console.error(
+          `[Inngest] Failed to delete business location ${location.id}:`,
+          error instanceof Error ? error.message : 'Unknown error'
+        );
+      }
+    }
+
+    console.log(`[Inngest] Cleanup complete: ${deletedCount}/${expiredLocations.length} business locations deleted`);
+
+    return { deleted: deletedCount, total: expiredLocations.length };
+  }
+);
