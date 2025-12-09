@@ -15,39 +15,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-
-type AppointmentType = {
-  id: string;
-  name: string;
-  description: string | null;
-  duration: number;
-  category: 'PRIVATE_LESSON' | 'APPOINTMENT';
-  status: 'DRAFT' | 'PUBLISHED' | 'UNPUBLISHED';
-  locationMode: 'BUSINESS_LOCATION' | 'ONLINE' | 'STUDENT_LOCATION';
-  businessLocationId: string | null;
-  businessLocation?: {
-    id: string;
-    name: string;
-    address: string;
-    city: string;
-    state: string;
-    zipCode: string;
-  } | null;
-  instructors: Array<{
-    instructorId: string;
-    instructor: {
-      id: string;
-      user: {
-        firstName: string;
-        lastName: string;
-        email: string;
-      };
-    };
-  }>;
-  _count: {
-    appointments: number;
-  };
-};
+import { AppointmentTypeListItem } from '@/types/appointment-type';
+import { formatDuration } from '@/hooks/useAppointmentTypeFiltering';
 
 export default function TeachingPage() {
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
@@ -62,10 +31,10 @@ export default function TeachingPage() {
 
   // Filter for appointment types this instructor is qualified for
   // Note: tRPC types don't include Prisma 'include' fields, so we cast to our local type
-  const myAppointmentTypes = useMemo((): AppointmentType[] => {
+  const myAppointmentTypes = useMemo((): AppointmentTypeListItem[] => {
     if (!allAppointmentTypes?.items || !currentInstructorId) return [];
 
-    const types = allAppointmentTypes.items as unknown as AppointmentType[];
+    const types = allAppointmentTypes.items as unknown as AppointmentTypeListItem[];
     return types.filter(type =>
       type.status === 'PUBLISHED' &&
       type.instructors.some(inst => inst.instructorId === currentInstructorId)
@@ -92,19 +61,7 @@ export default function TeachingPage() {
     return filtered;
   }, [myAppointmentTypes, categoryFilter, searchQuery]);
 
-  const formatDuration = (minutes: number) => {
-    if (minutes < 60) {
-      return `${minutes} min`;
-    }
-    const hours = Math.floor(minutes / 60);
-    const remainingMinutes = minutes % 60;
-    if (remainingMinutes === 0) {
-      return `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
-    }
-    return `${hours}h ${remainingMinutes}m`;
-  };
-
-  const formatLocation = (type: AppointmentType) => {
+  const formatLocation = (type: AppointmentTypeListItem) => {
     switch (type.locationMode) {
       case 'BUSINESS_LOCATION':
         return type.businessLocation ? (

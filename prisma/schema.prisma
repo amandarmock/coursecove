@@ -146,6 +146,8 @@ model OrganizationMembership {
   @@index([organizationId])
   @@index([role])
   @@index([clerkMembershipId])
+  @@index([organizationId, status]) // TD-06: Compound index for router queries
+  @@index([userId, organizationId, role, status]) // TD-07: Compound index for RLS is_current_user_instructor()
   @@map("organization_memberships")
 }
 
@@ -182,6 +184,7 @@ model Invitation {
   @@index([token])
   @@index([status])
   @@index([expiresAt]) // For cleanup queries
+  @@index([organizationId, status]) // Compound index for invitation management queries
   @@map("invitations")
 }
 
@@ -212,6 +215,7 @@ model WebhookEvent {
   @@index([eventType])
   @@index([status])
   @@index([createdAt])
+  @@index([status, createdAt]) // Compound index for cleanup batch jobs
   @@map("webhook_events")
 }
 
@@ -300,11 +304,11 @@ model BusinessLocation {
   organizationId String   @map("organization_id")
 
   // Location details
-  name           String   // e.g., "Studio A", "Downtown Branch"
-  address        String
-  city           String
-  state          String
-  zipCode        String   @map("zip_code")
+  name           String   @db.VarChar(100) // e.g., "Studio A", "Downtown Branch"
+  address        String   @db.VarChar(200)
+  city           String   @db.VarChar(100)
+  state          String   @db.VarChar(50)
+  zipCode        String   @db.VarChar(20) @map("zip_code")
   notes          String?  @db.Text // e.g., "Enter through side door", "Free parking in rear"
 
   // Status
@@ -334,7 +338,7 @@ model AppointmentType {
   organizationId String         @map("organization_id")
 
   // Appointment type details
-  name        String
+  name        String            @db.VarChar(200)
   description String?           @db.Text
   duration    Int               // Duration in minutes
   status      AppointmentTypeStatus @default(DRAFT)
@@ -381,7 +385,7 @@ model Appointment {
   createdBy      String        @map("created_by")
 
   // Appointment details (can override appointment type)
-  title          String
+  title          String        @db.VarChar(200)
   description    String?       @db.Text
   duration       Int           // Duration in minutes
   status         AppointmentStatus @default(UNBOOKED)
@@ -389,7 +393,7 @@ model Appointment {
   // Location
   isOnline        Boolean      @map("is_online")
   videoLink       String?      @map("video_link")
-  locationAddress String?      @map("location_address")
+  locationAddress String?      @db.VarChar(200) @map("location_address")
 
   // Notes
   notes          String?       @db.Text
@@ -417,6 +421,8 @@ model Appointment {
   @@index([organizationId])
   @@index([status])
   @@index([deletedAt])
+  @@index([organizationId, status, deletedAt]) // Compound index for list queries
+  @@index([appointmentTypeId, status, deletedAt]) // Compound index for archive check
   @@map("appointments")
 }
 
@@ -472,5 +478,6 @@ model InstructorAvailability {
   @@index([instructorId])
   @@index([organizationId])
   @@index([instructorId, dayOfWeek])
+  @@index([organizationId, instructorId]) // Compound index for schedule queries
   @@map("instructor_availability")
 }

@@ -8,7 +8,7 @@ import {
 } from '../init';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { AppointmentTypeStatus, AppointmentTypeCategory, LocationMode } from '@prisma/client';
+import { AppointmentTypeStatus, AppointmentTypeCategory, LocationMode, MembershipStatus, Prisma } from '@prisma/client';
 import {
   sanitizeRequiredText,
   sanitizeRichText,
@@ -23,6 +23,12 @@ import {
   MAX_PAGE_SIZE,
 } from '@/lib/utils/constants';
 import { INSTRUCTOR_CAPABLE_ROLES } from '@/lib/utils/roles';
+import {
+  instructorInclude,
+  appointmentTypeIncludeWithLocation,
+  appointmentTypeIncludeWithCount,
+  appointmentTypeIncludeFull,
+} from '../includes/appointmentType';
 
 /**
  * Appointment Types Router
@@ -87,7 +93,7 @@ export const appointmentTypesRouter = router({
           id: { in: input.qualifiedInstructorIds },
           organizationId: ctx.organizationId,
           role: { in: INSTRUCTOR_CAPABLE_ROLES },
-          status: 'ACTIVE',
+          status: MembershipStatus.ACTIVE,
         },
         select: { id: true },
       });
@@ -103,7 +109,7 @@ export const appointmentTypesRouter = router({
       const appointmentType = await ctx.prisma.appointmentType.create({
         data: {
           organizationId: ctx.organizationId!,
-          name: sanitizeRequiredText(input.name, 200, 'Name'),
+          name: sanitizeRequiredText(input.name, APPOINTMENT_TYPE_NAME_MAX_LENGTH, 'Name'),
           description: input.description ? sanitizeRichText(input.description) : null,
           duration: input.duration,
           status: AppointmentTypeStatus.DRAFT,
@@ -117,24 +123,7 @@ export const appointmentTypesRouter = router({
             })),
           },
         },
-        include: {
-          businessLocation: true,
-          instructors: {
-            include: {
-              instructor: {
-                include: {
-                  user: {
-                    select: {
-                      firstName: true,
-                      lastName: true,
-                      email: true,
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
+        include: appointmentTypeIncludeWithLocation,
       });
 
       return appointmentType;
@@ -167,29 +156,7 @@ export const appointmentTypesRouter = router({
       const [appointmentTypes, total] = await ctx.prisma.$transaction([
         ctx.prisma.appointmentType.findMany({
           where,
-          include: {
-            businessLocation: true,
-            instructors: {
-              include: {
-                instructor: {
-                  include: {
-                    user: {
-                      select: {
-                        firstName: true,
-                        lastName: true,
-                        email: true,
-                      },
-                    },
-                  },
-                },
-              },
-            },
-            _count: {
-              select: {
-                appointments: true,
-              },
-            },
-          },
+          include: appointmentTypeIncludeFull,
           orderBy: {
             name: 'asc',
           },
@@ -224,28 +191,7 @@ export const appointmentTypesRouter = router({
           id: input.id,
           organizationId: ctx.organizationId,
         },
-        include: {
-          instructors: {
-            include: {
-              instructor: {
-                include: {
-                  user: {
-                    select: {
-                      firstName: true,
-                      lastName: true,
-                      email: true,
-                    },
-                  },
-                },
-              },
-            },
-          },
-          _count: {
-            select: {
-              appointments: true,
-            },
-          },
-        },
+        include: appointmentTypeIncludeWithCount,
       });
 
       if (!appointmentType) {
@@ -356,7 +302,7 @@ export const appointmentTypesRouter = router({
             id: { in: input.qualifiedInstructorIds },
             organizationId: ctx.organizationId,
             role: { in: INSTRUCTOR_CAPABLE_ROLES },
-            status: 'ACTIVE',
+            status: MembershipStatus.ACTIVE,
           },
           select: { id: true },
         });
@@ -370,10 +316,10 @@ export const appointmentTypesRouter = router({
       }
 
       // Build update data
-      const updateData: Record<string, unknown> = {};
+      const updateData: Prisma.AppointmentTypeUpdateInput = {};
 
       if (input.name !== undefined) {
-        updateData.name = sanitizeRequiredText(input.name, 200, 'Name');
+        updateData.name = sanitizeRequiredText(input.name, APPOINTMENT_TYPE_NAME_MAX_LENGTH, 'Name');
       }
       if (input.description !== undefined) {
         updateData.description = input.description ? sanitizeRichText(input.description) : null;
@@ -388,7 +334,9 @@ export const appointmentTypesRouter = router({
         updateData.locationMode = input.locationMode;
       }
       if (input.businessLocationId !== undefined) {
-        updateData.businessLocationId = input.businessLocationId;
+        updateData.businessLocation = input.businessLocationId
+          ? { connect: { id: input.businessLocationId } }
+          : { disconnect: true };
       }
 
       // Always increment version on update (optimistic locking)
@@ -417,24 +365,7 @@ export const appointmentTypesRouter = router({
         return tx.appointmentType.update({
           where: { id: input.id },
           data: updateData,
-          include: {
-            businessLocation: true,
-            instructors: {
-              include: {
-                instructor: {
-                  include: {
-                    user: {
-                      select: {
-                        firstName: true,
-                        lastName: true,
-                        email: true,
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
+          include: appointmentTypeIncludeWithLocation,
         });
       });
 
@@ -476,23 +407,7 @@ export const appointmentTypesRouter = router({
       const updated = await ctx.prisma.appointmentType.update({
         where: { id: input.id },
         data: { status: AppointmentTypeStatus.PUBLISHED },
-        include: {
-          instructors: {
-            include: {
-              instructor: {
-                include: {
-                  user: {
-                    select: {
-                      firstName: true,
-                      lastName: true,
-                      email: true,
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
+        include: instructorInclude,
       });
 
       return updated;
@@ -533,23 +448,7 @@ export const appointmentTypesRouter = router({
       const updated = await ctx.prisma.appointmentType.update({
         where: { id: input.id },
         data: { status: AppointmentTypeStatus.UNPUBLISHED },
-        include: {
-          instructors: {
-            include: {
-              instructor: {
-                include: {
-                  user: {
-                    select: {
-                      firstName: true,
-                      lastName: true,
-                      email: true,
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
+        include: instructorInclude,
       });
 
       return updated;
@@ -676,24 +575,7 @@ export const appointmentTypesRouter = router({
           deletedAt: null,
           status: AppointmentTypeStatus.DRAFT, // Reset to DRAFT on unarchive
         },
-        include: {
-          businessLocation: true,
-          instructors: {
-            include: {
-              instructor: {
-                include: {
-                  user: {
-                    select: {
-                      firstName: true,
-                      lastName: true,
-                      email: true,
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
+        include: appointmentTypeIncludeWithLocation,
       });
 
       return updated;

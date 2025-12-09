@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -113,6 +113,9 @@ export function AppointmentTypeForm({
     return mins;
   });
   const [isInstructorOpen, setIsInstructorOpen] = useState(false);
+  const [focusedInstructorIndex, setFocusedInstructorIndex] = useState(-1);
+  const instructorListRef = useRef<HTMLDivElement>(null);
+  const instructorButtonRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   // Determine default instructors - include current user if creating new
   const getDefaultInstructors = () => {
@@ -161,14 +164,14 @@ export function AppointmentTypeForm({
     setValue('duration', minutes);
   };
 
-  const handleInstructorToggle = (instructorId: string) => {
+  const handleInstructorToggle = useCallback((instructorId: string) => {
     const current = selectedInstructors || [];
     if (current.includes(instructorId)) {
       setValue('qualifiedInstructorIds', current.filter((id) => id !== instructorId));
     } else {
       setValue('qualifiedInstructorIds', [...current, instructorId]);
     }
-  };
+  }, [selectedInstructors, setValue]);
 
   const removeInstructor = (instructorId: string) => {
     const current = selectedInstructors || [];
@@ -178,6 +181,68 @@ export function AppointmentTypeForm({
   const getInitials = (firstName: string, lastName: string) => {
     return `${firstName?.[0] || ''}${lastName?.[0] || ''}`.toUpperCase();
   };
+
+  // Keyboard navigation for instructor dropdown
+  const handleInstructorKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (!isInstructorOpen) {
+      // Open on ArrowDown or Enter when closed
+      if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        setIsInstructorOpen(true);
+        setFocusedInstructorIndex(0);
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'Escape':
+        e.preventDefault();
+        setIsInstructorOpen(false);
+        setFocusedInstructorIndex(-1);
+        break;
+      case 'ArrowDown':
+        e.preventDefault();
+        setFocusedInstructorIndex(prev =>
+          prev < instructors.length - 1 ? prev + 1 : 0
+        );
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setFocusedInstructorIndex(prev =>
+          prev > 0 ? prev - 1 : instructors.length - 1
+        );
+        break;
+      case 'Enter':
+      case ' ':
+        e.preventDefault();
+        if (focusedInstructorIndex >= 0 && focusedInstructorIndex < instructors.length) {
+          handleInstructorToggle(instructors[focusedInstructorIndex].id);
+        }
+        break;
+      case 'Tab':
+        // Close dropdown on tab out
+        setIsInstructorOpen(false);
+        setFocusedInstructorIndex(-1);
+        break;
+    }
+  }, [isInstructorOpen, instructors, focusedInstructorIndex, handleInstructorToggle]);
+
+  // Scroll focused item into view
+  useEffect(() => {
+    if (focusedInstructorIndex >= 0 && instructorButtonRefs.current[focusedInstructorIndex]) {
+      instructorButtonRefs.current[focusedInstructorIndex]?.scrollIntoView({
+        block: 'nearest',
+        behavior: 'smooth',
+      });
+    }
+  }, [focusedInstructorIndex]);
+
+  // Reset focus index when dropdown closes
+  useEffect(() => {
+    if (!isInstructorOpen) {
+      setFocusedInstructorIndex(-1);
+    }
+  }, [isInstructorOpen]);
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
@@ -460,8 +525,11 @@ export function AppointmentTypeForm({
                   variant="outline"
                   role="combobox"
                   aria-expanded={isInstructorOpen}
+                  aria-haspopup="listbox"
+                  aria-label="Select instructors"
                   className="w-full justify-between"
                   onClick={() => setIsInstructorOpen(!isInstructorOpen)}
+                  onKeyDown={handleInstructorKeyDown}
                 >
                   <span className="flex items-center gap-2">
                     {selectedInstructors?.length > 0 ? (
@@ -482,18 +550,28 @@ export function AppointmentTypeForm({
 
               {/* Enhanced Dropdown with Better Styling */}
               {isInstructorOpen && (
-                <div className="rounded-lg border bg-popover shadow-lg">
+                <div
+                  className="rounded-lg border bg-popover shadow-lg"
+                  role="listbox"
+                  aria-label="Instructor options"
+                  ref={instructorListRef}
+                >
                   <div className="max-h-64 overflow-y-auto p-2">
-                    {instructors.map((instructor) => {
+                    {instructors.map((instructor, index) => {
                       const isSelected = selectedInstructors?.includes(instructor.id);
+                      const isFocused = index === focusedInstructorIndex;
                       return (
                         <button
                           key={instructor.id}
+                          ref={(el) => { instructorButtonRefs.current[index] = el; }}
                           type="button"
+                          role="option"
+                          aria-selected={isSelected}
                           className={cn(
                             'flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-sm outline-none transition-colors',
                             'hover:bg-accent hover:text-accent-foreground',
-                            isSelected && 'bg-accent/50'
+                            isSelected && 'bg-accent/50',
+                            isFocused && 'ring-2 ring-ring ring-offset-1'
                           )}
                           onClick={() => handleInstructorToggle(instructor.id)}
                         >

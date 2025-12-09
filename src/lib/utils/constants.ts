@@ -19,6 +19,12 @@ export const APPOINTMENT_TYPE_NAME_MAX_LENGTH = 200;
 /** Maximum length for appointment type descriptions */
 export const APPOINTMENT_TYPE_DESCRIPTION_MAX_LENGTH = 5000;
 
+/** Maximum length for appointment titles */
+export const APPOINTMENT_TITLE_MAX_LENGTH = 200;
+
+/** Maximum length for appointment location addresses */
+export const APPOINTMENT_LOCATION_ADDRESS_MAX_LENGTH = 200;
+
 // =============================================================================
 // Business Location Limits
 // =============================================================================

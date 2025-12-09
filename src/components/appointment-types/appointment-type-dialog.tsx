@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/dialog';
 import { AppointmentTypeForm, AppointmentTypeFormData } from './appointment-type-form';
 import { trpc } from '@/lib/trpc/client';
+import { toast } from '@/components/ui/use-toast';
 
 interface AppointmentType {
   id: string;
@@ -104,6 +105,14 @@ export function AppointmentTypeDialog({
       onOpenChange(false);
       onSuccess?.();
     },
+    onError: (error) => {
+      const isConflict = error.data?.code === 'CONFLICT';
+      toast({
+        title: isConflict ? 'Conflict' : 'Error',
+        description: error.message || 'Failed to create appointment type.',
+        variant: 'destructive',
+      });
+    },
   });
 
   const updateMutation = trpc.appointmentTypes.update.useMutation({
@@ -111,6 +120,14 @@ export function AppointmentTypeDialog({
       utils.appointmentTypes.list.invalidate();
       onOpenChange(false);
       onSuccess?.();
+    },
+    onError: (error) => {
+      const isConflict = error.data?.code === 'CONFLICT';
+      toast({
+        title: isConflict ? 'Conflict' : 'Error',
+        description: error.message || 'Failed to update appointment type.',
+        variant: 'destructive',
+      });
     },
   });
 
@@ -160,7 +177,15 @@ export function AppointmentTypeDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[95vh] p-0 flex flex-col">
+      <DialogContent
+        className="max-w-3xl max-h-[95vh] p-0 flex flex-col"
+        onOpenAutoFocus={(e) => {
+          // Focus the name input when dialog opens for better accessibility
+          e.preventDefault();
+          const nameInput = document.getElementById('name');
+          nameInput?.focus();
+        }}
+      >
         {/* Fixed Header */}
         <div className="px-6 py-4 border-b">
           <DialogHeader>

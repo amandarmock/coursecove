@@ -7,8 +7,7 @@
 
 import '@testing-library/jest-dom'
 
-// Mock environment variables for tests
-process.env.NODE_ENV = 'test'
+// Note: NODE_ENV is automatically set to 'test' by Jest
 
 // Suppress console during tests (optional - comment out for debugging)
 // global.console = {

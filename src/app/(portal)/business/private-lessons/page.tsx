@@ -42,50 +42,18 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { AppointmentTypeDialog } from '@/components/appointment-types/appointment-type-dialog';
-
-type AppointmentType = {
-  id: string;
-  name: string;
-  description: string | null;
-  duration: number;
-  version: number; // For optimistic locking
-  category: 'PRIVATE_LESSON' | 'APPOINTMENT';
-  status: 'DRAFT' | 'PUBLISHED' | 'UNPUBLISHED';
-  locationMode: 'BUSINESS_LOCATION' | 'ONLINE' | 'STUDENT_LOCATION';
-  businessLocationId: string | null;
-  businessLocation?: {
-    id: string;
-    name: string;
-    address: string;
-  } | null;
-  instructors: Array<{
-    instructorId: string;
-    instructor: {
-      id: string;
-      user: {
-        firstName: string | null;
-        lastName: string | null;
-        email: string;
-      };
-    };
-  }>;
-  _count: {
-    appointments: number;
-  };
-};
-
-type SortField = 'name' | 'duration' | 'status' | 'instructors';
-type SortDirection = 'asc' | 'desc';
+import { AppointmentTypeListItem } from '@/types/appointment-type';
+import { useAppointmentTypeFiltering, formatDuration } from '@/hooks/useAppointmentTypeFiltering';
 
 export default function PrivateLessonsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingAppointmentType, setEditingAppointmentType] = useState<AppointmentType | null>(null);
+  const [editingAppointmentType, setEditingAppointmentType] = useState<AppointmentTypeListItem | null>(null);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [archivingTypeId, setArchivingTypeId] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [sortField, setSortField] = useState<SortField>('name');
-  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false);
+  const [publishingTypeId, setPublishingTypeId] = useState<string | null>(null);
+  const [unpublishDialogOpen, setUnpublishDialogOpen] = useState(false);
+  const [unpublishingTypeId, setUnpublishingTypeId] = useState<string | null>(null);
 
   const utils = trpc.useUtils();
   const { data: allAppointmentTypes, isLoading } = trpc.appointmentTypes.list.useQuery({});
@@ -93,12 +61,22 @@ export default function PrivateLessonsPage() {
   // Filter for only PRIVATE_LESSON category
   // Note: tRPC types don't include Prisma 'include' fields, so we cast to our local type
   const appointmentTypes = useMemo(() => {
-    return (allAppointmentTypes?.items?.filter(type => type.category === 'PRIVATE_LESSON') || []) as unknown as AppointmentType[];
+    return (allAppointmentTypes?.items?.filter(type => type.category === 'PRIVATE_LESSON') || []) as unknown as AppointmentTypeListItem[];
   }, [allAppointmentTypes]);
+
+  const {
+    statusFilter,
+    setStatusFilter,
+    searchQuery,
+    setSearchQuery,
+    handleSort,
+    filteredAndSortedTypes,
+  } = useAppointmentTypeFiltering({ items: appointmentTypes });
 
   const publishMutation = trpc.appointmentTypes.publish.useMutation({
     onSuccess: () => {
       utils.appointmentTypes.list.invalidate();
+      setPublishDialogOpen(false);
       toast({
         title: "Success",
         description: "Private lesson type published successfully.",
@@ -116,6 +94,7 @@ export default function PrivateLessonsPage() {
   const unpublishMutation = trpc.appointmentTypes.unpublish.useMutation({
     onSuccess: () => {
       utils.appointmentTypes.list.invalidate();
+      setUnpublishDialogOpen(false);
       toast({
         title: "Success",
         description: "Private lesson type unpublished successfully.",
@@ -148,69 +127,7 @@ export default function PrivateLessonsPage() {
     },
   });
 
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortDirection('asc');
-    }
-  };
-
-  const filteredAndSortedTypes = useMemo(() => {
-    let filtered = [...appointmentTypes];
-
-    // Apply status filter
-    if (statusFilter !== 'all') {
-      filtered = filtered.filter(type => type.status === statusFilter);
-    }
-
-    // Apply search filter
-    if (searchQuery) {
-      filtered = filtered.filter(type =>
-        type.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        type.description?.toLowerCase().includes(searchQuery.toLowerCase())
-      );
-    }
-
-    // Apply sorting
-    filtered.sort((a, b) => {
-      let comparison = 0;
-
-      switch (sortField) {
-        case 'name':
-          comparison = a.name.localeCompare(b.name);
-          break;
-        case 'duration':
-          comparison = a.duration - b.duration;
-          break;
-        case 'status':
-          comparison = a.status.localeCompare(b.status);
-          break;
-        case 'instructors':
-          comparison = a.instructors.length - b.instructors.length;
-          break;
-      }
-
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
-
-    return filtered;
-  }, [appointmentTypes, statusFilter, searchQuery, sortField, sortDirection]);
-
-  const formatDuration = (minutes: number) => {
-    if (minutes < 60) {
-      return `${minutes} min`;
-    }
-    const hours = Math.floor(minutes / 60);
-    const remainingMinutes = minutes % 60;
-    if (remainingMinutes === 0) {
-      return `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
-    }
-    return `${hours}h ${remainingMinutes}m`;
-  };
-
-  const formatLocation = (type: AppointmentType) => {
+  const formatLocation = (type: AppointmentTypeListItem) => {
     switch (type.locationMode) {
       case 'BUSINESS_LOCATION':
         return type.businessLocation ? (
@@ -238,7 +155,7 @@ export default function PrivateLessonsPage() {
     }
   };
 
-  const handleEdit = (type: AppointmentType) => {
+  const handleEdit = (type: AppointmentTypeListItem) => {
     setEditingAppointmentType(type);
     setDialogOpen(true);
   };
@@ -247,6 +164,20 @@ export default function PrivateLessonsPage() {
     if (archivingTypeId) {
       await archiveMutation.mutateAsync({ id: archivingTypeId });
       setArchivingTypeId(null);
+    }
+  };
+
+  const handlePublish = async () => {
+    if (publishingTypeId) {
+      await publishMutation.mutateAsync({ id: publishingTypeId });
+      setPublishingTypeId(null);
+    }
+  };
+
+  const handleUnpublish = async () => {
+    if (unpublishingTypeId) {
+      await unpublishMutation.mutateAsync({ id: unpublishingTypeId });
+      setUnpublishingTypeId(null);
     }
   };
 
@@ -431,7 +362,7 @@ export default function PrivateLessonsPage() {
                     <TableCell className="text-right">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon">
+                          <Button variant="ghost" size="icon" aria-label="Actions menu">
                             <MoreHorizontal className="h-4 w-4" />
                           </Button>
                         </DropdownMenuTrigger>
@@ -441,13 +372,19 @@ export default function PrivateLessonsPage() {
                             Edit
                           </DropdownMenuItem>
                           {(type.status === 'DRAFT' || type.status === 'UNPUBLISHED') && (
-                            <DropdownMenuItem onClick={() => publishMutation.mutate({ id: type.id })}>
+                            <DropdownMenuItem onClick={() => {
+                              setPublishingTypeId(type.id);
+                              setPublishDialogOpen(true);
+                            }}>
                               <Eye className="h-4 w-4 mr-2" />
                               Publish
                             </DropdownMenuItem>
                           )}
                           {type.status === 'PUBLISHED' && (
-                            <DropdownMenuItem onClick={() => unpublishMutation.mutate({ id: type.id })}>
+                            <DropdownMenuItem onClick={() => {
+                              setUnpublishingTypeId(type.id);
+                              setUnpublishDialogOpen(true);
+                            }}>
                               <EyeOff className="h-4 w-4 mr-2" />
                               Unpublish
                             </DropdownMenuItem>
@@ -496,6 +433,36 @@ export default function PrivateLessonsPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleArchive}>Archive</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={publishDialogOpen} onOpenChange={setPublishDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Publish Lesson Type</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to publish this lesson type? It will become visible to students and available for booking with allocated credits.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handlePublish}>Publish</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={unpublishDialogOpen} onOpenChange={setUnpublishDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unpublish Lesson Type</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to unpublish this lesson type? It will no longer be visible to students, but existing allocations will not be affected.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleUnpublish}>Unpublish</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

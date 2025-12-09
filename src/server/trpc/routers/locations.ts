@@ -17,6 +17,10 @@ import {
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
 } from '@/lib/utils/constants';
+import {
+  sanitizeRequiredText,
+  sanitizeRichText,
+} from '@/lib/utils/sanitize';
 
 /**
  * Business Locations Router
@@ -130,7 +134,12 @@ export const locationsRouter = router({
 
       const location = await prisma.businessLocation.create({
         data: {
-          ...input,
+          name: sanitizeRequiredText(input.name, LOCATION_NAME_MAX_LENGTH, 'Name'),
+          address: sanitizeRequiredText(input.address, LOCATION_ADDRESS_MAX_LENGTH, 'Address'),
+          city: sanitizeRequiredText(input.city, LOCATION_CITY_MAX_LENGTH, 'City'),
+          state: sanitizeRequiredText(input.state, LOCATION_STATE_MAX_LENGTH, 'State'),
+          zipCode: sanitizeRequiredText(input.zipCode, LOCATION_ZIP_MAX_LENGTH, 'Zip code'),
+          notes: input.notes ? sanitizeRichText(input.notes, LOCATION_NOTES_MAX_LENGTH) : null,
           organizationId,
         },
       });
@@ -196,8 +205,12 @@ export const locationsRouter = router({
       const location = await prisma.businessLocation.update({
         where: { id },
         data: {
-          ...data,
-          notes: data.notes ?? null, // Convert undefined to null
+          name: sanitizeRequiredText(data.name, LOCATION_NAME_MAX_LENGTH, 'Name'),
+          address: sanitizeRequiredText(data.address, LOCATION_ADDRESS_MAX_LENGTH, 'Address'),
+          city: sanitizeRequiredText(data.city, LOCATION_CITY_MAX_LENGTH, 'City'),
+          state: sanitizeRequiredText(data.state, LOCATION_STATE_MAX_LENGTH, 'State'),
+          zipCode: sanitizeRequiredText(data.zipCode, LOCATION_ZIP_MAX_LENGTH, 'Zip code'),
+          notes: data.notes ? sanitizeRichText(data.notes, LOCATION_NOTES_MAX_LENGTH) : null,
         },
       });
 

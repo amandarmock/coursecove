@@ -52,7 +52,7 @@
     "inngest": "^3.45.0",
     "isomorphic-dompurify": "^2.32.0",
     "lucide-react": "^0.553.0",
-    "next": "16.0.1",
+    "next": "^16.0.7",
     "next-themes": "^0.4.6",
     "react": "19.2.0",
     "react-dom": "19.2.0",

@@ -5,14 +5,69 @@ All notable changes to CourseCove will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2025-12-04
+## [Unreleased] - 2025-12-09
 
 ### Project Status
 - **F001 (Appointment Type Management):** 100% complete ✅
+- **F001 Technical Debt:** 100% complete ✅ (16/16 items resolved)
 - **F002 (Instructor Availability):** 100% complete ✅
 - **F003 (Booking System):** 0% complete - specification pending
 
 ### Added
+
+#### F001 Technical Debt Final Resolution (December 8-9, 2025)
+
+**Code Quality & Maintainability:**
+- **TD-14: Shared Type Definitions** - Created `src/types/appointment-type.ts` with centralized types:
+  - `AppointmentTypeListItem` - Type for list views with nested instructor/location data
+  - `AppointmentTypeSortField` and `AppointmentTypeSortDirection` - Sorting types
+- **TD-15: Reusable Filtering Hook** - Created `src/hooks/useAppointmentTypeFiltering.ts`:
+  - Extracted duplicate filtering/sorting logic from 3 pages
+  - Provides `filteredAndSortedTypes`, `handleSort`, `statusFilter`, `searchQuery` state
+  - Includes `formatDuration()` utility function for consistent duration display
+
+**Accessibility Improvements:**
+- **TD-10: Dialog Focus Management** - Added `onOpenAutoFocus` to `AppointmentTypeDialog`:
+  - Focuses the name input when dialog opens
+  - Improves keyboard navigation experience
+- **TD-11: Keyboard Navigation for Instructor Dropdown** - Full keyboard support:
+  - Escape key closes dropdown
+  - ArrowUp/ArrowDown navigate options
+  - Enter/Space select focused option
+  - Tab closes dropdown and moves focus
+  - Added ARIA attributes: `role="combobox"`, `aria-expanded`, `aria-haspopup="listbox"`, `role="option"`, `aria-selected`
+  - Visual focus ring styling for keyboard users
+
+**UX Improvements:**
+- **TD-16: Confirmation Dialogs for Publish/Unpublish**:
+  - Added AlertDialogs to `/business/appointments` page
+  - Added AlertDialogs to `/business/private-lessons` page
+  - Matches existing archive confirmation UX pattern
+  - Prevents accidental status changes
+
+**Previously Completed (December 8, 2025):**
+- TD-01: Location sanitization (Security)
+- TD-02: Hardcoded status string constants
+- TD-03: Magic numbers + VarChar constraints
+- TD-04: Reusable Prisma includes
+- TD-05: Type-safe Prisma query objects
+- TD-06/07/08: Compound database indexes (7 indexes)
+- TD-09: aria-labels on icon buttons
+- TD-12/13: Mutation error toasts + conflict handling
+
+#### F001 Router Integration Tests (December 8, 2025)
+
+**Testing Infrastructure:**
+- Created comprehensive tRPC router test suite (132 integration tests)
+- `src/server/trpc/routers/__tests__/appointmentTypes.test.ts` - 49 tests
+- `src/server/trpc/routers/__tests__/appointments.test.ts` - 55 tests
+- `src/server/trpc/routers/__tests__/locations.test.ts` - 28 tests
+- Added test helpers to `src/test/helpers/trpc.ts`:
+  - `createMockAppointmentType()` - Factory for appointment type test data
+  - `createMockMembership()` - Factory for membership test data
+  - `createMockAppointment()` - Factory for appointment test data
+  - `createMockLocation()` - Factory for business location test data
+- **Total test suite: 221 tests passing** (89 sanitize + 132 router tests)
 
 #### Membership Soft Delete System (F001 Technical Debt Resolution)
 - Enterprise-grade soft delete for organization memberships

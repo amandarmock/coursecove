@@ -1,7 +1,7 @@
 import { router, protectedProcedure, adminProcedure, instructorProcedure } from '../init';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { AppointmentStatus, AppointmentTypeStatus, LocationMode, MembershipRole } from '@prisma/client';
+import { AppointmentStatus, AppointmentTypeStatus, LocationMode, MembershipRole, Prisma } from '@prisma/client';
 import {
   sanitizeText,
   sanitizeRichText,
@@ -499,16 +499,17 @@ export const appointmentsRouter = router({
     )
     .query(async ({ ctx, input }) => {
       // Build where clause based on role
-      const where: Record<string, unknown> = {
+      const where: Prisma.AppointmentWhereInput = {
         organizationId: ctx.organizationId,
         deletedAt: null,
       };
 
       // Role-based filtering
-      if (ctx.role === MembershipRole.INSTRUCTOR) {
-        where.instructorId = ctx.membershipId;
-      } else if (ctx.role === MembershipRole.STUDENT) {
-        where.studentId = ctx.membershipId;
+      const membershipId = ctx.membershipId;
+      if (ctx.role === MembershipRole.INSTRUCTOR && membershipId) {
+        where.instructorId = membershipId;
+      } else if (ctx.role === MembershipRole.STUDENT && membershipId) {
+        where.studentId = membershipId;
       }
 
       // Apply optional filters
@@ -750,7 +751,7 @@ export const appointmentsRouter = router({
       }
 
       // Build update data
-      const updateData: Record<string, unknown> = {
+      const updateData: Prisma.AppointmentUpdateInput = {
         version: { increment: 1 },
       };
 

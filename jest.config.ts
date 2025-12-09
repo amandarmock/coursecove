@@ -56,7 +56,7 @@ export default async () => {
   return {
     ...jestConfig,
     transformIgnorePatterns: [
-      '/node_modules/(?!(isomorphic-dompurify|parse5|entities)/)',
+      '/node_modules/(?!(isomorphic-dompurify|parse5|entities|superjson|copy-anything|is-what)/)',
     ],
   }
 }
