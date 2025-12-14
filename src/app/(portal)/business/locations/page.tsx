@@ -45,8 +45,10 @@ type Location = {
   zipCode: string;
   notes: string | null;
   isActive: boolean;
-  createdAt: Date;
-  updatedAt: Date;
+  organizationId: string;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
 };
 
 export default function BusinessLocationsPage() {
@@ -198,7 +200,7 @@ export default function BusinessLocationsPage() {
                 </TableRow>
               ) : (
                 locations?.items?.map((location) => (
-                  <TableRow key={location.id}>
+                  <TableRow key={location.id} data-testid="location-row">
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
                         <MapPin className="h-4 w-4 text-muted-foreground" />
@@ -213,9 +215,9 @@ export default function BusinessLocationsPage() {
                     </TableCell>
                     <TableCell>
                       {location.isActive ? (
-                        <Badge variant="default">Active</Badge>
+                        <Badge variant="default" data-testid="status-badge">Active</Badge>
                       ) : (
-                        <Badge variant="secondary">Inactive</Badge>
+                        <Badge variant="secondary" data-testid="status-badge">Inactive</Badge>
                       )}
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate">

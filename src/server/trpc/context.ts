@@ -1,26 +1,7 @@
 import { auth } from '@clerk/nextjs/server';
-import { prisma } from '@/lib/db/prisma';
-import { Prisma } from '@prisma/client';
-
-/**
- * Sets PostgreSQL session variables for RLS policies
- * These variables are used by RLS helper functions to determine access
- */
-async function setRLSContext(clerkUserId: string | null, orgId: string | null) {
-  // Set Clerk user ID for RLS
-  if (clerkUserId) {
-    await prisma.$executeRaw`SELECT set_config('app.clerk_user_id', ${clerkUserId}, true)`;
-  } else {
-    await prisma.$executeRaw`SELECT set_config('app.clerk_user_id', '', true)`;
-  }
-
-  // Set organization ID for RLS (internal ID, not Clerk org ID)
-  if (orgId) {
-    await prisma.$executeRaw`SELECT set_config('app.org_id', ${orgId}, true)`;
-  } else {
-    await prisma.$executeRaw`SELECT set_config('app.org_id', '', true)`;
-  }
-}
+import { supabaseAdmin } from '@/lib/db/supabase';
+import { setRLSContext } from '@/lib/db/queries/context';
+import type { MembershipRole } from '@/types/database';
 
 /**
  * Creates context for tRPC procedures
@@ -32,51 +13,74 @@ export async function createContext() {
 
   // If no user, return minimal context
   if (!userId) {
-    await setRLSContext(null, null);
+    await setRLSContext(supabaseAdmin, null, null);
     return {
-      prisma,
+      supabase: supabaseAdmin,
       userId: null,
       organizationId: null,
       membershipId: null,
-      role: null,
+      role: null as MembershipRole | null,
     };
   }
 
   // If user but no organization, set user context only
   if (!orgId) {
-    await setRLSContext(userId, null);
+    await setRLSContext(supabaseAdmin, userId, null);
     return {
-      prisma,
+      supabase: supabaseAdmin,
       userId,
       organizationId: null,
       membershipId: null,
-      role: null,
+      role: null as MembershipRole | null,
     };
   }
 
   // Fetch user's membership in the organization
-  const membership = await prisma.organizationMembership.findFirst({
-    where: {
-      user: { clerkUserId: userId },
-      organization: { clerkOrganizationId: orgId },
-      status: 'ACTIVE',
-    },
-    select: {
-      id: true,
-      role: true,
-      organizationId: true,
-    },
-  });
+  const { data: membership } = await supabaseAdmin
+    .from('organization_memberships')
+    .select('id, role, organization_id')
+    .eq('status', 'ACTIVE')
+    .eq('users.clerk_user_id', userId)
+    .eq('organizations.clerk_organization_id', orgId)
+    .single();
+
+  // Alternative query if the above join doesn't work:
+  // First get the user's internal ID
+  const { data: user } = await supabaseAdmin
+    .from('users')
+    .select('id')
+    .eq('clerk_user_id', userId)
+    .single();
+
+  // Then get the organization's internal ID
+  const { data: org } = await supabaseAdmin
+    .from('organizations')
+    .select('id')
+    .eq('clerk_organization_id', orgId)
+    .single();
+
+  // Finally get the membership
+  let membershipData = membership;
+  if (!membershipData && user && org) {
+    const { data } = await supabaseAdmin
+      .from('organization_memberships')
+      .select('id, role, organization_id')
+      .eq('user_id', user.id)
+      .eq('organization_id', org.id)
+      .eq('status', 'ACTIVE')
+      .single();
+    membershipData = data;
+  }
 
   // Set RLS context with Clerk user ID and internal org ID
-  await setRLSContext(userId, membership?.organizationId ?? null);
+  await setRLSContext(supabaseAdmin, userId, membershipData?.organization_id ?? null);
 
   return {
-    prisma,
+    supabase: supabaseAdmin,
     userId,
-    organizationId: membership?.organizationId ?? null,
-    membershipId: membership?.id ?? null,
-    role: membership?.role ?? null,
+    organizationId: membershipData?.organization_id ?? null,
+    membershipId: membershipData?.id ?? null,
+    role: (membershipData?.role as MembershipRole) ?? null,
   };
 }
 

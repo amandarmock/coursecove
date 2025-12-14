@@ -1,4 +1,4 @@
-import { MembershipRole } from '@prisma/client';
+import { MembershipRole } from '@/types/database';
 import {
   LayoutDashboard,
   Calendar,

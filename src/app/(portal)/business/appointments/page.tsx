@@ -59,7 +59,7 @@ export default function AppointmentsPage() {
   const { data: allAppointmentTypes, isLoading } = trpc.appointmentTypes.list.useQuery({});
 
   // Filter for only APPOINTMENT category
-  // Note: tRPC types don't include Prisma 'include' fields, so we cast to our local type
+  // Note: tRPC return types need casting to include nested relation fields
   const appointmentTypes = useMemo(() => {
     return (allAppointmentTypes?.items?.filter(type => type.category === 'APPOINTMENT') || []) as unknown as AppointmentTypeListItem[];
   }, [allAppointmentTypes]);
@@ -345,13 +345,13 @@ export default function AppointmentsPage() {
                     </TableCell>
                     <TableCell>
                       {type.status === 'PUBLISHED' && (
-                        <Badge variant="default">Published</Badge>
+                        <Badge variant="default" data-testid="status-badge">Published</Badge>
                       )}
                       {type.status === 'DRAFT' && (
-                        <Badge variant="secondary">Draft</Badge>
+                        <Badge variant="secondary" data-testid="status-badge">Draft</Badge>
                       )}
                       {type.status === 'UNPUBLISHED' && (
-                        <Badge variant="outline">Unpublished</Badge>
+                        <Badge variant="outline" data-testid="status-badge">Unpublished</Badge>
                       )}
                     </TableCell>
                     <TableCell>

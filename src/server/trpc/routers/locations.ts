@@ -21,6 +21,25 @@ import {
   sanitizeRequiredText,
   sanitizeRichText,
 } from '@/lib/utils/sanitize';
+import type { Row } from '@/types/database';
+
+/** Transform Supabase snake_case to frontend camelCase */
+function transformLocation(loc: Row<'business_locations'>) {
+  return {
+    id: loc.id,
+    name: loc.name,
+    address: loc.address,
+    city: loc.city,
+    state: loc.state,
+    zipCode: loc.zip_code,
+    notes: loc.notes,
+    isActive: loc.is_active,
+    organizationId: loc.organization_id,
+    createdAt: loc.created_at,
+    updatedAt: loc.updated_at,
+    deletedAt: loc.deleted_at,
+  };
+}
 
 /**
  * Business Locations Router
@@ -40,35 +59,42 @@ export const locationsRouter = router({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      const { organizationId, prisma } = ctx;
+      const { organizationId, supabase } = ctx;
       const take = input?.take ?? DEFAULT_PAGE_SIZE;
       const skip = input?.skip ?? 0;
 
-      const where = {
-        organizationId,
-        deletedAt: null,
-        ...(input?.includeInactive ? {} : { isActive: true }),
-      };
+      // Build query
+      let query = supabase
+        .from('business_locations')
+        .select('*', { count: 'exact' })
+        .eq('organization_id', organizationId)
+        .is('deleted_at', null)
+        .order('is_active', { ascending: false })
+        .order('name', { ascending: true })
+        .range(skip, skip + take - 1);
 
-      const [locations, total] = await prisma.$transaction([
-        prisma.businessLocation.findMany({
-          where,
-          orderBy: [
-            { isActive: 'desc' },
-            { name: 'asc' },
-          ],
-          take,
-          skip,
-        }),
-        prisma.businessLocation.count({ where }),
-      ]);
+      // Filter inactive unless requested
+      if (!input?.includeInactive) {
+        query = query.eq('is_active', true);
+      }
+
+      const { data: locations, count, error } = await query;
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      const total = count ?? 0;
 
       return {
-        items: locations,
+        items: (locations ?? []).map(transformLocation),
         total,
         take,
         skip,
-        hasMore: skip + locations.length < total,
+        hasMore: skip + (locations?.length ?? 0) < total,
       };
     }),
 
@@ -78,24 +104,24 @@ export const locationsRouter = router({
   getById: protectedProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ ctx, input }) => {
-      const { organizationId, prisma } = ctx;
+      const { organizationId, supabase } = ctx;
 
-      const location = await prisma.businessLocation.findFirst({
-        where: {
-          id: input.id,
-          organizationId,
-          deletedAt: null,
-        },
-      });
+      const { data: location, error } = await supabase
+        .from('business_locations')
+        .select('*')
+        .eq('id', input.id)
+        .eq('organization_id', organizationId)
+        .is('deleted_at', null)
+        .single();
 
-      if (!location) {
+      if (error || !location) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Location not found',
         });
       }
 
-      return location;
+      return transformLocation(location);
     }),
 
   /**
@@ -114,16 +140,16 @@ export const locationsRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { organizationId, prisma } = ctx;
+      const { organizationId, supabase } = ctx;
 
       // Check for duplicate name within organization
-      const existing = await prisma.businessLocation.findFirst({
-        where: {
-          organizationId,
-          name: input.name,
-          deletedAt: null,
-        },
-      });
+      const { data: existing } = await supabase
+        .from('business_locations')
+        .select('id')
+        .eq('organization_id', organizationId)
+        .eq('name', input.name)
+        .is('deleted_at', null)
+        .single();
 
       if (existing) {
         throw new TRPCError({
@@ -132,19 +158,28 @@ export const locationsRouter = router({
         });
       }
 
-      const location = await prisma.businessLocation.create({
-        data: {
+      const { data: location, error } = await supabase
+        .from('business_locations')
+        .insert({
           name: sanitizeRequiredText(input.name, LOCATION_NAME_MAX_LENGTH, 'Name'),
           address: sanitizeRequiredText(input.address, LOCATION_ADDRESS_MAX_LENGTH, 'Address'),
           city: sanitizeRequiredText(input.city, LOCATION_CITY_MAX_LENGTH, 'City'),
           state: sanitizeRequiredText(input.state, LOCATION_STATE_MAX_LENGTH, 'State'),
-          zipCode: sanitizeRequiredText(input.zipCode, LOCATION_ZIP_MAX_LENGTH, 'Zip code'),
+          zip_code: sanitizeRequiredText(input.zipCode, LOCATION_ZIP_MAX_LENGTH, 'Zip code'),
           notes: input.notes ? sanitizeRichText(input.notes, LOCATION_NOTES_MAX_LENGTH) : null,
-          organizationId,
-        },
-      });
+          organization_id: organizationId,
+        })
+        .select()
+        .single();
 
-      return location;
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      return transformLocation(location);
     }),
 
   /**
@@ -164,19 +199,19 @@ export const locationsRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { organizationId, prisma } = ctx;
+      const { organizationId, supabase } = ctx;
       const { id, ...data } = input;
 
       // Verify location exists and belongs to organization
-      const existing = await prisma.businessLocation.findFirst({
-        where: {
-          id,
-          organizationId,
-          deletedAt: null,
-        },
-      });
+      const { data: existing, error: existingError } = await supabase
+        .from('business_locations')
+        .select('*')
+        .eq('id', id)
+        .eq('organization_id', organizationId)
+        .is('deleted_at', null)
+        .single();
 
-      if (!existing) {
+      if (existingError || !existing) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Location not found',
@@ -185,14 +220,14 @@ export const locationsRouter = router({
 
       // Check for duplicate name (if name is changing)
       if (data.name !== existing.name) {
-        const duplicate = await prisma.businessLocation.findFirst({
-          where: {
-            organizationId,
-            name: data.name,
-            deletedAt: null,
-            id: { not: id },
-          },
-        });
+        const { data: duplicate } = await supabase
+          .from('business_locations')
+          .select('id')
+          .eq('organization_id', organizationId)
+          .eq('name', data.name)
+          .is('deleted_at', null)
+          .neq('id', id)
+          .single();
 
         if (duplicate) {
           throw new TRPCError({
@@ -202,19 +237,28 @@ export const locationsRouter = router({
         }
       }
 
-      const location = await prisma.businessLocation.update({
-        where: { id },
-        data: {
+      const { data: location, error } = await supabase
+        .from('business_locations')
+        .update({
           name: sanitizeRequiredText(data.name, LOCATION_NAME_MAX_LENGTH, 'Name'),
           address: sanitizeRequiredText(data.address, LOCATION_ADDRESS_MAX_LENGTH, 'Address'),
           city: sanitizeRequiredText(data.city, LOCATION_CITY_MAX_LENGTH, 'City'),
           state: sanitizeRequiredText(data.state, LOCATION_STATE_MAX_LENGTH, 'State'),
-          zipCode: sanitizeRequiredText(data.zipCode, LOCATION_ZIP_MAX_LENGTH, 'Zip code'),
+          zip_code: sanitizeRequiredText(data.zipCode, LOCATION_ZIP_MAX_LENGTH, 'Zip code'),
           notes: data.notes ? sanitizeRichText(data.notes, LOCATION_NOTES_MAX_LENGTH) : null,
-        },
-      });
+        })
+        .eq('id', id)
+        .select()
+        .single();
 
-      return location;
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      return transformLocation(location);
     }),
 
   /**
@@ -229,18 +273,18 @@ export const locationsRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { organizationId, prisma } = ctx;
+      const { organizationId, supabase } = ctx;
 
       // Verify location exists and belongs to organization
-      const existing = await prisma.businessLocation.findFirst({
-        where: {
-          id: input.id,
-          organizationId,
-          deletedAt: null,
-        },
-      });
+      const { data: existing, error: existingError } = await supabase
+        .from('business_locations')
+        .select('id')
+        .eq('id', input.id)
+        .eq('organization_id', organizationId)
+        .is('deleted_at', null)
+        .single();
 
-      if (!existing) {
+      if (existingError || !existing) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Location not found',
@@ -249,29 +293,36 @@ export const locationsRouter = router({
 
       // If deactivating, check if any appointment types use this location
       if (!input.isActive) {
-        const appointmentTypesUsingLocation = await prisma.appointmentType.count({
-          where: {
-            businessLocationId: input.id,
-            organizationId,
-            deletedAt: null,
-            // Check ALL non-archived types, not just PUBLISHED
-          },
-        });
+        const { count } = await supabase
+          .from('appointment_types')
+          .select('*', { count: 'exact', head: true })
+          .eq('business_location_id', input.id)
+          .eq('organization_id', organizationId)
+          .is('deleted_at', null);
 
-        if (appointmentTypesUsingLocation > 0) {
+        if (count && count > 0) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
-            message: `Cannot deactivate location. ${appointmentTypesUsingLocation} appointment type(s) are using this location.`,
+            message: `Cannot deactivate location. ${count} appointment type(s) are using this location.`,
           });
         }
       }
 
-      const location = await prisma.businessLocation.update({
-        where: { id: input.id },
-        data: { isActive: input.isActive },
-      });
+      const { data: location, error } = await supabase
+        .from('business_locations')
+        .update({ is_active: input.isActive })
+        .eq('id', input.id)
+        .select()
+        .single();
 
-      return location;
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      return transformLocation(location);
     }),
 
   /**
@@ -281,18 +332,18 @@ export const locationsRouter = router({
   delete: rateLimitedDeleteProcedure('locations.delete')
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const { organizationId, prisma } = ctx;
+      const { organizationId, supabase } = ctx;
 
       // Verify location exists and belongs to organization
-      const existing = await prisma.businessLocation.findFirst({
-        where: {
-          id: input.id,
-          organizationId,
-          deletedAt: null,
-        },
-      });
+      const { data: existing, error: existingError } = await supabase
+        .from('business_locations')
+        .select('id')
+        .eq('id', input.id)
+        .eq('organization_id', organizationId)
+        .is('deleted_at', null)
+        .single();
 
-      if (!existing) {
+      if (existingError || !existing) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Location not found',
@@ -300,27 +351,35 @@ export const locationsRouter = router({
       }
 
       // Check if any appointment types use this location
-      const appointmentTypesUsingLocation = await prisma.appointmentType.count({
-        where: {
-          businessLocationId: input.id,
-          organizationId,
-          deletedAt: null,
-        },
-      });
+      const { count } = await supabase
+        .from('appointment_types')
+        .select('*', { count: 'exact', head: true })
+        .eq('business_location_id', input.id)
+        .eq('organization_id', organizationId)
+        .is('deleted_at', null);
 
-      if (appointmentTypesUsingLocation > 0) {
+      if (count && count > 0) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
-          message: `Cannot delete location. ${appointmentTypesUsingLocation} appointment type(s) are using this location.`,
+          message: `Cannot delete location. ${count} appointment type(s) are using this location.`,
         });
       }
 
       // Soft delete
-      const location = await prisma.businessLocation.update({
-        where: { id: input.id },
-        data: { deletedAt: new Date() },
-      });
+      const { data: location, error } = await supabase
+        .from('business_locations')
+        .update({ deleted_at: new Date().toISOString() })
+        .eq('id', input.id)
+        .select()
+        .single();
 
-      return location;
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      return transformLocation(location);
     }),
 });

@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Clock, Users } from 'lucide-react';
 import { trpc } from '@/lib/trpc/client';
-import { MembershipRole } from '@prisma/client';
+import { MembershipRole } from '@/types/database';
 import { RemovedMembersBanner } from '@/components/team/removed-members-banner';
 
 // Roles that can be instructors (have availability)

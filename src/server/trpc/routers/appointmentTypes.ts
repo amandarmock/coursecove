@@ -1,6 +1,5 @@
 import {
   router,
-  adminProcedure,
   instructorProcedure,
   rateLimitedCreateProcedure,
   rateLimitedAdminProcedure,
@@ -8,7 +7,13 @@ import {
 } from '../init';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { AppointmentTypeStatus, AppointmentTypeCategory, LocationMode, MembershipStatus, Prisma } from '@prisma/client';
+import {
+  AppointmentTypeStatus,
+  AppointmentTypeCategory,
+  LocationMode,
+  MembershipStatus,
+  MembershipRole,
+} from '@/types/database';
 import {
   sanitizeRequiredText,
   sanitizeRichText,
@@ -23,12 +28,6 @@ import {
   MAX_PAGE_SIZE,
 } from '@/lib/utils/constants';
 import { INSTRUCTOR_CAPABLE_ROLES } from '@/lib/utils/roles';
-import {
-  instructorInclude,
-  appointmentTypeIncludeWithLocation,
-  appointmentTypeIncludeWithCount,
-  appointmentTypeIncludeFull,
-} from '../includes/appointmentType';
 
 /**
  * Appointment Types Router
@@ -70,14 +69,14 @@ export const appointmentTypesRouter = router({
 
       // If business location is provided, verify it exists and belongs to the organization
       if (input.businessLocationId) {
-        const businessLocation = await ctx.prisma.businessLocation.findFirst({
-          where: {
-            id: input.businessLocationId,
-            organizationId: ctx.organizationId,
-            isActive: true,
-            deletedAt: null,
-          },
-        });
+        const { data: businessLocation } = await ctx.supabase
+          .from('business_locations')
+          .select('id')
+          .eq('id', input.businessLocationId)
+          .eq('organization_id', ctx.organizationId)
+          .eq('is_active', true)
+          .is('deleted_at', null)
+          .single();
 
         if (!businessLocation) {
           throw new TRPCError({
@@ -88,43 +87,64 @@ export const appointmentTypesRouter = router({
       }
 
       // Validate all instructor IDs have instructor capabilities in the same organization
-      const instructors = await ctx.prisma.organizationMembership.findMany({
-        where: {
-          id: { in: input.qualifiedInstructorIds },
-          organizationId: ctx.organizationId,
-          role: { in: INSTRUCTOR_CAPABLE_ROLES },
-          status: MembershipStatus.ACTIVE,
-        },
-        select: { id: true },
-      });
+      const { data: instructors } = await ctx.supabase
+        .from('organization_memberships')
+        .select('id')
+        .in('id', input.qualifiedInstructorIds)
+        .eq('organization_id', ctx.organizationId)
+        .in('role', INSTRUCTOR_CAPABLE_ROLES as unknown as MembershipRole[])
+        .eq('status', MembershipStatus.ACTIVE);
 
-      if (instructors.length !== input.qualifiedInstructorIds.length) {
+      if ((instructors?.length ?? 0) !== input.qualifiedInstructorIds.length) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: 'One or more instructor IDs are invalid or do not have instructor capabilities in this organization',
         });
       }
 
-      // Create appointment type with qualified instructors
-      const appointmentType = await ctx.prisma.appointmentType.create({
-        data: {
-          organizationId: ctx.organizationId!,
+      // Create appointment type
+      const { data: appointmentType, error: createError } = await ctx.supabase
+        .from('appointment_types')
+        .insert({
+          organization_id: ctx.organizationId!,
           name: sanitizeRequiredText(input.name, APPOINTMENT_TYPE_NAME_MAX_LENGTH, 'Name'),
           description: input.description ? sanitizeRichText(input.description) : null,
           duration: input.duration,
           status: AppointmentTypeStatus.DRAFT,
           category: input.category,
-          locationMode: input.locationMode,
-          businessLocationId: input.businessLocationId || null,
-          instructors: {
-            create: input.qualifiedInstructorIds.map((instructorId) => ({
-              instructorId,
-              organizationId: ctx.organizationId!,
-            })),
-          },
-        },
-        include: appointmentTypeIncludeWithLocation,
-      });
+          location_mode: input.locationMode,
+          business_location_id: input.businessLocationId || null,
+        })
+        .select(`
+          *,
+          business_locations (*)
+        `)
+        .single();
+
+      if (createError || !appointmentType) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: createError?.message ?? 'Failed to create appointment type',
+        });
+      }
+
+      // Create instructor assignments
+      const { error: instructorError } = await ctx.supabase
+        .from('appointment_type_instructors')
+        .insert(
+          input.qualifiedInstructorIds.map((instructorId) => ({
+            appointment_type_id: appointmentType.id,
+            instructor_id: instructorId,
+            organization_id: ctx.organizationId!,
+          }))
+        );
+
+      if (instructorError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: instructorError.message,
+        });
+      }
 
       return appointmentType;
     }),
@@ -147,31 +167,51 @@ export const appointmentTypesRouter = router({
       const take = input?.take ?? DEFAULT_PAGE_SIZE;
       const skip = input?.skip ?? 0;
 
-      const where = {
-        organizationId: ctx.organizationId,
-        ...(input?.includeArchived ? {} : { deletedAt: null }),
-        ...(input?.category ? { category: input.category } : {}),
-      };
+      // Build query
+      let query = ctx.supabase
+        .from('appointment_types')
+        .select(`
+          *,
+          business_locations (*),
+          appointment_type_instructors (
+            *,
+            organization_memberships (
+              *,
+              users (*)
+            )
+          )
+        `, { count: 'exact' })
+        .eq('organization_id', ctx.organizationId)
+        .order('name', { ascending: true })
+        .range(skip, skip + take - 1);
 
-      const [appointmentTypes, total] = await ctx.prisma.$transaction([
-        ctx.prisma.appointmentType.findMany({
-          where,
-          include: appointmentTypeIncludeFull,
-          orderBy: {
-            name: 'asc',
-          },
-          take,
-          skip,
-        }),
-        ctx.prisma.appointmentType.count({ where }),
-      ]);
+      // Filter archived unless requested
+      if (!input?.includeArchived) {
+        query = query.is('deleted_at', null);
+      }
+
+      // Filter by category if specified
+      if (input?.category) {
+        query = query.eq('category', input.category);
+      }
+
+      const { data: appointmentTypes, count, error } = await query;
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      const total = count ?? 0;
 
       return {
-        items: appointmentTypes,
+        items: appointmentTypes ?? [],
         total,
         take,
         skip,
-        hasMore: skip + appointmentTypes.length < total,
+        hasMore: skip + (appointmentTypes?.length ?? 0) < total,
       };
     }),
 
@@ -186,22 +226,43 @@ export const appointmentTypesRouter = router({
       })
     )
     .query(async ({ ctx, input }) => {
-      const appointmentType = await ctx.prisma.appointmentType.findFirst({
-        where: {
-          id: input.id,
-          organizationId: ctx.organizationId,
-        },
-        include: appointmentTypeIncludeWithCount,
-      });
+      const { data: appointmentType, error } = await ctx.supabase
+        .from('appointment_types')
+        .select(`
+          *,
+          business_locations (*),
+          appointment_type_instructors (
+            *,
+            organization_memberships (
+              *,
+              users (*)
+            )
+          )
+        `)
+        .eq('id', input.id)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!appointmentType) {
+      if (error || !appointmentType) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Appointment type not found',
         });
       }
 
-      return appointmentType;
+      // Get appointment count
+      const { count: appointmentCount } = await ctx.supabase
+        .from('appointments')
+        .select('*', { count: 'exact', head: true })
+        .eq('appointment_type_id', input.id)
+        .is('deleted_at', null);
+
+      return {
+        ...appointmentType,
+        _count: {
+          appointments: appointmentCount ?? 0,
+        },
+      };
     }),
 
   /**
@@ -224,14 +285,14 @@ export const appointmentTypesRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       // Verify appointment type exists and belongs to organization
-      const existing = await ctx.prisma.appointmentType.findFirst({
-        where: {
-          id: input.id,
-          organizationId: ctx.organizationId,
-        },
-      });
+      const { data: existing, error: existingError } = await ctx.supabase
+        .from('appointment_types')
+        .select('*')
+        .eq('id', input.id)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!existing) {
+      if (existingError || !existing) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Appointment type not found',
@@ -263,10 +324,10 @@ export const appointmentTypesRouter = router({
       }
 
       // Determine final location mode
-      const finalLocationMode = input.locationMode ?? existing.locationMode;
+      const finalLocationMode = input.locationMode ?? existing.location_mode;
       const finalBusinessLocationId = input.businessLocationId !== undefined
         ? input.businessLocationId
-        : existing.businessLocationId;
+        : existing.business_location_id;
 
       // Validate location requirements
       if (finalLocationMode === LocationMode.BUSINESS_LOCATION && !finalBusinessLocationId) {
@@ -278,14 +339,14 @@ export const appointmentTypesRouter = router({
 
       // If business location is provided, verify it exists and belongs to the organization
       if (finalBusinessLocationId) {
-        const businessLocation = await ctx.prisma.businessLocation.findFirst({
-          where: {
-            id: finalBusinessLocationId,
-            organizationId: ctx.organizationId,
-            isActive: true,
-            deletedAt: null,
-          },
-        });
+        const { data: businessLocation } = await ctx.supabase
+          .from('business_locations')
+          .select('id')
+          .eq('id', finalBusinessLocationId)
+          .eq('organization_id', ctx.organizationId)
+          .eq('is_active', true)
+          .is('deleted_at', null)
+          .single();
 
         if (!businessLocation) {
           throw new TRPCError({
@@ -297,17 +358,15 @@ export const appointmentTypesRouter = router({
 
       // Validate instructor IDs if provided
       if (input.qualifiedInstructorIds) {
-        const instructors = await ctx.prisma.organizationMembership.findMany({
-          where: {
-            id: { in: input.qualifiedInstructorIds },
-            organizationId: ctx.organizationId,
-            role: { in: INSTRUCTOR_CAPABLE_ROLES },
-            status: MembershipStatus.ACTIVE,
-          },
-          select: { id: true },
-        });
+        const { data: instructors } = await ctx.supabase
+          .from('organization_memberships')
+          .select('id')
+          .in('id', input.qualifiedInstructorIds)
+          .eq('organization_id', ctx.organizationId)
+          .in('role', INSTRUCTOR_CAPABLE_ROLES as unknown as MembershipRole[])
+          .eq('status', MembershipStatus.ACTIVE);
 
-        if (instructors.length !== input.qualifiedInstructorIds.length) {
+        if ((instructors?.length ?? 0) !== input.qualifiedInstructorIds.length) {
           throw new TRPCError({
             code: 'BAD_REQUEST',
             message: 'One or more instructor IDs are invalid or do not have instructor capabilities in this organization',
@@ -316,7 +375,9 @@ export const appointmentTypesRouter = router({
       }
 
       // Build update data
-      const updateData: Prisma.AppointmentTypeUpdateInput = {};
+      const updateData: Record<string, unknown> = {
+        version: existing.version + 1, // Increment version for optimistic locking
+      };
 
       if (input.name !== undefined) {
         updateData.name = sanitizeRequiredText(input.name, APPOINTMENT_TYPE_NAME_MAX_LENGTH, 'Name');
@@ -331,43 +392,63 @@ export const appointmentTypesRouter = router({
         updateData.category = input.category;
       }
       if (input.locationMode !== undefined) {
-        updateData.locationMode = input.locationMode;
+        updateData.location_mode = input.locationMode;
       }
       if (input.businessLocationId !== undefined) {
-        updateData.businessLocation = input.businessLocationId
-          ? { connect: { id: input.businessLocationId } }
-          : { disconnect: true };
+        updateData.business_location_id = input.businessLocationId ?? null;
       }
 
-      // Always increment version on update (optimistic locking)
-      updateData.version = { increment: 1 };
+      // Update instructors if provided
+      if (input.qualifiedInstructorIds) {
+        // Delete existing instructor assignments
+        const { error: deleteError } = await ctx.supabase
+          .from('appointment_type_instructors')
+          .delete()
+          .eq('appointment_type_id', input.id);
 
-      // Update appointment type and instructors in transaction
-      const appointmentType = await ctx.prisma.$transaction(async (tx) => {
-        // Update instructors if provided
-        if (input.qualifiedInstructorIds) {
-          // Delete existing instructor assignments
-          await tx.appointmentTypeInstructor.deleteMany({
-            where: { appointmentTypeId: input.id },
-          });
-
-          // Create new instructor assignments
-          await tx.appointmentTypeInstructor.createMany({
-            data: input.qualifiedInstructorIds.map((instructorId) => ({
-              appointmentTypeId: input.id,
-              instructorId,
-              organizationId: ctx.organizationId!,
-            })),
+        if (deleteError) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: deleteError.message,
           });
         }
 
-        // Update appointment type
-        return tx.appointmentType.update({
-          where: { id: input.id },
-          data: updateData,
-          include: appointmentTypeIncludeWithLocation,
+        // Create new instructor assignments
+        const { error: insertError } = await ctx.supabase
+          .from('appointment_type_instructors')
+          .insert(
+            input.qualifiedInstructorIds.map((instructorId) => ({
+              appointment_type_id: input.id,
+              instructor_id: instructorId,
+              organization_id: ctx.organizationId!,
+            }))
+          );
+
+        if (insertError) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: insertError.message,
+          });
+        }
+      }
+
+      // Update appointment type
+      const { data: appointmentType, error: updateError } = await ctx.supabase
+        .from('appointment_types')
+        .update(updateData)
+        .eq('id', input.id)
+        .select(`
+          *,
+          business_locations (*)
+        `)
+        .single();
+
+      if (updateError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: updateError.message,
         });
-      });
+      }
 
       return appointmentType;
     }),
@@ -383,14 +464,14 @@ export const appointmentTypesRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const appointmentType = await ctx.prisma.appointmentType.findFirst({
-        where: {
-          id: input.id,
-          organizationId: ctx.organizationId,
-        },
-      });
+      const { data: appointmentType, error: findError } = await ctx.supabase
+        .from('appointment_types')
+        .select('*')
+        .eq('id', input.id)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!appointmentType) {
+      if (findError || !appointmentType) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Appointment type not found',
@@ -404,11 +485,28 @@ export const appointmentTypesRouter = router({
         });
       }
 
-      const updated = await ctx.prisma.appointmentType.update({
-        where: { id: input.id },
-        data: { status: AppointmentTypeStatus.PUBLISHED },
-        include: instructorInclude,
-      });
+      const { data: updated, error: updateError } = await ctx.supabase
+        .from('appointment_types')
+        .update({ status: AppointmentTypeStatus.PUBLISHED })
+        .eq('id', input.id)
+        .select(`
+          *,
+          appointment_type_instructors (
+            *,
+            organization_memberships (
+              *,
+              users (*)
+            )
+          )
+        `)
+        .single();
+
+      if (updateError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: updateError.message,
+        });
+      }
 
       return updated;
     }),
@@ -424,14 +522,14 @@ export const appointmentTypesRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const appointmentType = await ctx.prisma.appointmentType.findFirst({
-        where: {
-          id: input.id,
-          organizationId: ctx.organizationId,
-        },
-      });
+      const { data: appointmentType, error: findError } = await ctx.supabase
+        .from('appointment_types')
+        .select('*')
+        .eq('id', input.id)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!appointmentType) {
+      if (findError || !appointmentType) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Appointment type not found',
@@ -445,11 +543,28 @@ export const appointmentTypesRouter = router({
         });
       }
 
-      const updated = await ctx.prisma.appointmentType.update({
-        where: { id: input.id },
-        data: { status: AppointmentTypeStatus.UNPUBLISHED },
-        include: instructorInclude,
-      });
+      const { data: updated, error: updateError } = await ctx.supabase
+        .from('appointment_types')
+        .update({ status: AppointmentTypeStatus.UNPUBLISHED })
+        .eq('id', input.id)
+        .select(`
+          *,
+          appointment_type_instructors (
+            *,
+            organization_memberships (
+              *,
+              users (*)
+            )
+          )
+        `)
+        .single();
+
+      if (updateError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: updateError.message,
+        });
+      }
 
       return updated;
     }),
@@ -465,14 +580,14 @@ export const appointmentTypesRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const appointmentType = await ctx.prisma.appointmentType.findFirst({
-        where: {
-          id: input.id,
-          organizationId: ctx.organizationId,
-        },
-      });
+      const { data: appointmentType, error: findError } = await ctx.supabase
+        .from('appointment_types')
+        .select('*')
+        .eq('id', input.id)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!appointmentType) {
+      if (findError || !appointmentType) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Appointment type not found',
@@ -480,15 +595,14 @@ export const appointmentTypesRouter = router({
       }
 
       // Check for active appointments before allowing archive
-      const activeAppointments = await ctx.prisma.appointment.count({
-        where: {
-          appointmentTypeId: input.id,
-          status: { in: ['BOOKED', 'SCHEDULED', 'IN_PROGRESS'] },
-          deletedAt: null,
-        },
-      });
+      const { count: activeAppointments } = await ctx.supabase
+        .from('appointments')
+        .select('*', { count: 'exact', head: true })
+        .eq('appointment_type_id', input.id)
+        .in('status', ['BOOKED', 'SCHEDULED', 'IN_PROGRESS'])
+        .is('deleted_at', null);
 
-      if (activeAppointments > 0) {
+      if (activeAppointments && activeAppointments > 0) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: `Cannot archive: ${activeAppointments} active appointment(s) exist. Cancel or complete them first.`,
@@ -502,17 +616,24 @@ export const appointmentTypesRouter = router({
         });
       }
 
-      if (appointmentType.deletedAt) {
+      if (appointmentType.deleted_at) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: 'Appointment type is already archived',
         });
       }
 
-      await ctx.prisma.appointmentType.update({
-        where: { id: input.id },
-        data: { deletedAt: new Date() },
-      });
+      const { error: updateError } = await ctx.supabase
+        .from('appointment_types')
+        .update({ deleted_at: new Date().toISOString() })
+        .eq('id', input.id);
+
+      if (updateError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: updateError.message,
+        });
+      }
 
       return { success: true };
     }),
@@ -528,21 +649,21 @@ export const appointmentTypesRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const appointmentType = await ctx.prisma.appointmentType.findFirst({
-        where: {
-          id: input.id,
-          organizationId: ctx.organizationId,
-        },
-      });
+      const { data: appointmentType, error: findError } = await ctx.supabase
+        .from('appointment_types')
+        .select('*')
+        .eq('id', input.id)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!appointmentType) {
+      if (findError || !appointmentType) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Appointment type not found',
         });
       }
 
-      if (!appointmentType.deletedAt) {
+      if (!appointmentType.deleted_at) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: 'Appointment type is not archived',
@@ -550,15 +671,15 @@ export const appointmentTypesRouter = router({
       }
 
       // Verify business location is still valid if this type uses one
-      if (appointmentType.businessLocationId) {
-        const businessLocation = await ctx.prisma.businessLocation.findFirst({
-          where: {
-            id: appointmentType.businessLocationId,
-            organizationId: ctx.organizationId,
-            isActive: true,
-            deletedAt: null,
-          },
-        });
+      if (appointmentType.business_location_id) {
+        const { data: businessLocation } = await ctx.supabase
+          .from('business_locations')
+          .select('id')
+          .eq('id', appointmentType.business_location_id)
+          .eq('organization_id', ctx.organizationId)
+          .eq('is_active', true)
+          .is('deleted_at', null)
+          .single();
 
         if (!businessLocation) {
           throw new TRPCError({
@@ -569,14 +690,25 @@ export const appointmentTypesRouter = router({
       }
 
       // Restore the appointment type with DRAFT status
-      const updated = await ctx.prisma.appointmentType.update({
-        where: { id: input.id },
-        data: {
-          deletedAt: null,
+      const { data: updated, error: updateError } = await ctx.supabase
+        .from('appointment_types')
+        .update({
+          deleted_at: null,
           status: AppointmentTypeStatus.DRAFT, // Reset to DRAFT on unarchive
-        },
-        include: appointmentTypeIncludeWithLocation,
-      });
+        })
+        .eq('id', input.id)
+        .select(`
+          *,
+          business_locations (*)
+        `)
+        .single();
+
+      if (updateError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: updateError.message,
+        });
+      }
 
       return updated;
     }),

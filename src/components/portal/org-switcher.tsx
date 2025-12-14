@@ -3,7 +3,7 @@
 import { useOrganization, useOrganizationList, useClerk } from '@clerk/nextjs';
 import { CreditCard, Settings, Users, ChevronDown, Check, Plus, Building2 } from 'lucide-react';
 import Link from 'next/link';
-import { MembershipRole } from '@prisma/client';
+import { MembershipRole } from '@/types/database';
 import {
   DropdownMenu,
   DropdownMenuContent,

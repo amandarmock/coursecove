@@ -1,7 +1,7 @@
 'use client';
 
 import { Menu } from 'lucide-react';
-import { MembershipRole } from '@prisma/client';
+import { MembershipRole } from '@/types/database';
 import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { UserMenu } from './user-menu';

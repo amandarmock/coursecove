@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/portal/sidebar';
 import { Header } from '@/components/portal/header';
 import { Toaster } from '@/components/ui/toaster';
-import { MembershipRole } from '@prisma/client';
+import { MembershipRole } from '@/types/database';
 import { trpc } from '@/lib/trpc/client';
 
 export default function PortalLayout({

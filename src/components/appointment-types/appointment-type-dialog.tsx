@@ -30,7 +30,7 @@ interface AppointmentType {
   }>;
 }
 
-// Type for instructor members with user relation (tRPC types don't include Prisma includes)
+// Type for instructor members with user relation (matches tRPC response shape)
 type InstructorMember = {
   id: string;
   user: {
@@ -75,7 +75,7 @@ export function AppointmentTypeDialog({
   });
 
   // Map to the format expected by the form
-  // Cast to InstructorMember[] since tRPC types don't include Prisma include fields
+  // Cast to InstructorMember[] to include nested relation fields
   const typedInstructorMembers = instructorMembers as unknown as InstructorMember[] | undefined;
   const instructors = typedInstructorMembers?.map(member => ({
     id: member.id,

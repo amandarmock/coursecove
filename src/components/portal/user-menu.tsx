@@ -2,7 +2,7 @@
 
 import { useClerk, useUser } from '@clerk/nextjs';
 import { useRouter } from 'next/navigation';
-import { MembershipRole } from '@prisma/client';
+import { MembershipRole } from '@/types/database';
 import { Settings, Clock, Shield, LogOut, ChevronDown } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {

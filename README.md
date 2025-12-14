@@ -9,7 +9,7 @@ Multi-tenant learning management system for music schools, yoga studios, tutorin
 - **Secure Authentication** - Powered by Clerk with organization support
 - **Row-Level Security** - PostgreSQL RLS ensures data isolation between tenants
 - **Hybrid Webhook Processing** - Fast synchronous processing with Inngest queue fallback for reliability
-- **Type-Safe Database** - Prisma ORM with full TypeScript support
+- **Type-Safe Database** - Supabase with generated TypeScript types
 - **Modern UI** - Tailwind CSS + shadcn/ui components
 
 ### Appointment Management (F001) - 100% Complete
@@ -38,7 +38,6 @@ yogastudio.coursecove.com   →  Organization: "Yoga Studio"
 **Key Technologies:**
 - Next.js 16 (App Router) + TypeScript
 - Supabase (PostgreSQL with Row-Level Security)
-- Prisma ORM (Type-safe database queries)
 - Clerk (Authentication & Organizations)
 - Inngest (Background job processing & webhook queue)
 - Tailwind CSS + shadcn/ui
@@ -50,6 +49,7 @@ yogastudio.coursecove.com   →  Organization: "Yoga Studio"
 
 **Required Software:**
 - **Node.js 18+** and **npm 9+**
+- **Docker Desktop** - Required for local Supabase ([docker.com](https://docker.com))
 - **ngrok** - Required for webhook development ([ngrok.com](https://ngrok.com))
 
 **Required Service Accounts:**
@@ -63,10 +63,7 @@ yogastudio.coursecove.com   →  Organization: "Yoga Studio"
 Create a `.env.local` file in the root directory:
 
 ```bash
-# Database Connection (Supabase)
-DATABASE_URL="postgresql://postgres.[project-ref]:[password]@aws-0-us-east-1.pooler.supabase.com:5432/postgres?pgbouncer=true&connection_limit=1"
-
-# Supabase (for RLS-enforced queries)
+# Supabase (for database queries)
 NEXT_PUBLIC_SUPABASE_URL="https://[project-ref].supabase.co"
 NEXT_PUBLIC_SUPABASE_ANON_KEY="eyJhbGc..."
 SUPABASE_SERVICE_ROLE_KEY="eyJhbGc..."
@@ -97,8 +94,8 @@ NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL="/"
 
 1. **Supabase:**
    - Create project at [supabase.com](https://supabase.com)
-   - Go to Settings → Database → Connection string (Session Mode)
-   - Copy `DATABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
+   - Go to Settings → API
+   - Copy `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
 
 2. **Clerk:**
    - Create application at [clerk.com](https://clerk.com)
@@ -119,11 +116,11 @@ npm install
 # Install ngrok (required for webhooks)
 npm install -g ngrok
 
-# Generate Prisma client
-npx prisma generate
+# Start local Supabase (requires Docker)
+npx supabase start
 
-# Run database migrations
-npx prisma migrate dev
+# Apply database migrations
+npx supabase db reset
 ```
 
 **Configure Clerk webhooks (REQUIRED):**
@@ -160,6 +157,7 @@ npx inngest-cli@latest dev
 Visit:
 - App: [http://localhost:3000](http://localhost:3000)
 - Inngest Dashboard: [http://localhost:8288](http://localhost:8288)
+- Supabase Studio: [http://localhost:54323](http://localhost:54323)
 
 ### First-Time Setup
 
@@ -183,15 +181,18 @@ coursecove-app/
 │   │   └── functions.ts        # Background job workers
 │   ├── lib/
 │   │   └── db/
-│   │       ├── prisma.ts       # Prisma client (bypasses RLS)
-│   │       └── supabase.ts     # Supabase client (enforces RLS)
+│   │       ├── supabase.ts     # Supabase client (anon + admin)
+│   │       └── queries/        # Reusable query utilities
+│   ├── types/
+│   │   ├── supabase.ts         # Generated database types
+│   │   └── database.ts         # Type helpers and exports
 │   └── proxy.ts                # Subdomain routing + auth middleware
-├── prisma/
-│   ├── schema.prisma           # Database schema
-│   └── migrations/             # Migration history
+├── supabase/
+│   ├── config.toml             # Supabase configuration
+│   └── migrations/             # Database migrations
 ├── docs/                       # Comprehensive documentation
 │   └── features/
-│       ├── F001-appointment-management.md  # Appointment system (45% complete)
+│       ├── F001-appointment-management.md  # Appointment system (100% complete)
 │       └── F002-booking-management.md      # Booking system (planned)
 └── .env.local                  # Environment variables (not committed)
 ```
@@ -216,7 +217,7 @@ CourseCove uses **subdomain-based multi-tenancy** with a **shared database**:
 - Each organization gets a unique subdomain
 - Single PostgreSQL database stores all tenant data
 - Row-Level Security (RLS) ensures data isolation
-- Prisma (service role) for webhook writes, Supabase (anon key) for user queries
+- Supabase admin client (service role) for webhook writes, anon client for user queries
 
 ### Hybrid Webhook Processing
 
@@ -249,17 +250,20 @@ See the webhook processing section above for implementation details.
 ### Database Commands
 
 ```bash
-# Generate Prisma client after schema changes
-npx prisma generate
+# Generate TypeScript types from database schema
+npm run db:types
 
 # Create a new migration
-npx prisma migrate dev --name description
+npm run db:migrate migration_name
 
-# Reset database (WARNING: deletes all data)
-npx prisma migrate reset
+# Reset local database (applies all migrations fresh)
+npm run db:reset
 
-# Open Prisma Studio (database GUI)
-npx prisma studio
+# Push migrations to production
+npm run db:push
+
+# Open Supabase Studio (database GUI)
+# Visit http://localhost:54323 when local Supabase is running
 ```
 
 ### Monitoring Webhook Processing
@@ -317,13 +321,13 @@ GROUP BY status;
 - **Missing dependencies**: Check Inngest logs for "Dependencies not ready" errors
 
 ### Database connection errors
-- Verify `DATABASE_URL` uses Session Mode pooler (`.pooler.supabase.com`)
-- Check Supabase project is not paused
-- Ensure connection string includes `?pgbouncer=true`
+- Verify Supabase is running: `npx supabase status`
+- Check Supabase project is not paused (for remote)
+- Verify environment variables are set correctly
 
 ### RLS blocking queries
-- User queries: Use Supabase client (enforces RLS)
-- Webhook/admin queries: Use Prisma client (bypasses RLS with service role)
+- User queries: Use Supabase anon client (enforces RLS based on JWT)
+- Webhook/admin queries: Use Supabase admin client (bypasses RLS with service role)
 
 ## Deployment
 
@@ -359,8 +363,7 @@ GROUP BY status;
 Add these to Vercel environment variables:
 
 ```bash
-# Database (use production Supabase connection)
-DATABASE_URL="postgresql://..."
+# Supabase (use production project)
 NEXT_PUBLIC_SUPABASE_URL="https://[prod-ref].supabase.co"
 NEXT_PUBLIC_SUPABASE_ANON_KEY="eyJhbGc..."
 SUPABASE_SERVICE_ROLE_KEY="eyJhbGc..."

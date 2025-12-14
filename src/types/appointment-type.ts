@@ -9,7 +9,7 @@
 
 /**
  * AppointmentType as returned by the list query with includes.
- * This is a client-side type for UI components, not the Prisma model.
+ * This is a client-side type for UI components.
  */
 export type AppointmentTypeListItem = {
   id: string;

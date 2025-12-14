@@ -6,7 +6,7 @@ import { useState } from 'react';
 import { ChevronDown, ChevronRight, Settings, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { NavItem, getFilteredNavigation } from '@/lib/portal/navigation';
-import { MembershipRole } from '@prisma/client';
+import { MembershipRole } from '@/types/database';
 import { Badge } from '@/components/ui/badge';
 import { OrgSwitcher } from './org-switcher';
 

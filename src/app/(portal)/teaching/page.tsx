@@ -30,7 +30,7 @@ export default function TeachingPage() {
   const { data: allAppointmentTypes, isLoading } = trpc.appointmentTypes.list.useQuery({});
 
   // Filter for appointment types this instructor is qualified for
-  // Note: tRPC types don't include Prisma 'include' fields, so we cast to our local type
+  // Cast to include nested relation fields from tRPC response
   const myAppointmentTypes = useMemo((): AppointmentTypeListItem[] => {
     if (!allAppointmentTypes?.items || !currentInstructorId) return [];
 
@@ -130,7 +130,7 @@ export default function TeachingPage() {
       <div className="p-6 space-y-6">
         {/* Statistics */}
         <div className="grid gap-4 md:grid-cols-3">
-          <Card>
+          <Card data-testid="stat-total">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 Total Appointment Types
@@ -140,7 +140,7 @@ export default function TeachingPage() {
               <div className="text-2xl font-bold">{myAppointmentTypes.length}</div>
             </CardContent>
           </Card>
-          <Card>
+          <Card data-testid="stat-private-lessons">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 Private Lessons
@@ -152,7 +152,7 @@ export default function TeachingPage() {
               </div>
             </CardContent>
           </Card>
-          <Card>
+          <Card data-testid="stat-appointments">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 Appointments
@@ -211,11 +211,11 @@ export default function TeachingPage() {
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {filteredTypes.map((type) => (
-              <Card key={type.id} className="hover:shadow-md transition-shadow">
+              <Card key={type.id} className="hover:shadow-md transition-shadow" data-testid="appointment-type-card">
                 <CardHeader>
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-2">
-                      <div className={`p-1.5 rounded-lg ${getCategoryColor(type.category)}`}>
+                      <div className={`p-1.5 rounded-lg ${getCategoryColor(type.category)}`} data-testid="category-icon" data-category={type.category}>
                         {getCategoryIcon(type.category)}
                       </div>
                       <div>

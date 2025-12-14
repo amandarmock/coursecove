@@ -3,8 +3,36 @@ import { INSTRUCTOR_CAPABLE_ROLES } from '@/lib/utils/roles';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { differenceInDays } from 'date-fns';
+import type {
+  MembershipRole,
+  OrganizationMembership,
+  UserBasicInfo,
+  UserWithTimezone,
+  OrganizationBasicInfo,
+} from '@/types/database';
 
 const SOFT_DELETE_RETENTION_DAYS = 30;
+
+/** Membership with nested user info */
+type MembershipWithUserBasic = OrganizationMembership & { users: UserBasicInfo };
+type MembershipWithUserFull = OrganizationMembership & { users: UserWithTimezone };
+type MembershipWithUserAndOrg = OrganizationMembership & { users: UserBasicInfo; organizations: OrganizationBasicInfo };
+
+/** Transform Supabase snake_case membership to frontend camelCase */
+function transformMembership(m: OrganizationMembership) {
+  return {
+    id: m.id,
+    userId: m.user_id,
+    organizationId: m.organization_id,
+    role: m.role,
+    status: m.status,
+    clerkMembershipId: m.clerk_membership_id,
+    removedAt: m.removed_at,
+    removedBy: m.removed_by,
+    createdAt: m.created_at,
+    updatedAt: m.updated_at,
+  };
+}
 
 /**
  * Membership Router
@@ -20,32 +48,43 @@ export const membershipRouter = router({
       return null;
     }
 
-    const membership = await ctx.prisma.organizationMembership.findUnique({
-      where: { id: ctx.membershipId },
-      select: {
-        id: true,
-        role: true,
-        status: true,
-        user: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            avatarUrl: true,
-          },
-        },
-        organization: {
-          select: {
-            id: true,
-            name: true,
-            slug: true,
-          },
-        },
-      },
-    });
+    const { data: membership, error } = await ctx.supabase
+      .from('organization_memberships')
+      .select(`
+        id, role, status,
+        users (
+          id, first_name, last_name, email, avatar_url
+        ),
+        organizations (
+          id, name, slug
+        )
+      `)
+      .eq('id', ctx.membershipId)
+      .single();
 
-    return membership;
+    if (error || !membership) {
+      return null;
+    }
+
+    const m = membership as MembershipWithUserAndOrg;
+
+    return {
+      id: m.id,
+      role: m.role,
+      status: m.status,
+      user: {
+        id: m.users.id,
+        firstName: m.users.first_name,
+        lastName: m.users.last_name,
+        email: m.users.email,
+        avatarUrl: m.users.avatar_url,
+      },
+      organization: {
+        id: m.organizations.id,
+        name: m.organizations.name,
+        slug: m.organizations.slug,
+      },
+    };
   }),
 
   /**
@@ -53,29 +92,42 @@ export const membershipRouter = router({
    * Returns members with SUPER_ADMIN or INSTRUCTOR roles
    */
   listInstructors: instructorProcedure.query(async ({ ctx }) => {
-    const instructors = await ctx.prisma.organizationMembership.findMany({
-      where: {
-        organizationId: ctx.organizationId,
-        role: { in: INSTRUCTOR_CAPABLE_ROLES },
-        status: 'ACTIVE',
-      },
-      include: {
-        user: {
-          select: {
-            firstName: true,
-            lastName: true,
-            email: true,
-            avatarUrl: true,
-          },
-        },
-      },
-      orderBy: [
-        { user: { lastName: 'asc' } },
-        { user: { firstName: 'asc' } },
-      ],
+    const { data: instructors, error } = await ctx.supabase
+      .from('organization_memberships')
+      .select(`
+        *,
+        users (
+          first_name, last_name, email, avatar_url
+        )
+      `)
+      .eq('organization_id', ctx.organizationId)
+      .in('role', INSTRUCTOR_CAPABLE_ROLES as unknown as MembershipRole[])
+      .eq('status', 'ACTIVE');
+
+    if (error) {
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: error.message,
+      });
+    }
+
+    // Sort in JS since Supabase doesn't support ordering by nested fields
+    const typedInstructors = (instructors ?? []) as MembershipWithUserBasic[];
+    const sorted = typedInstructors.sort((a, b) => {
+      const lastNameCompare = (a.users.last_name ?? '').localeCompare(b.users.last_name ?? '');
+      if (lastNameCompare !== 0) return lastNameCompare;
+      return (a.users.first_name ?? '').localeCompare(b.users.first_name ?? '');
     });
 
-    return instructors;
+    return sorted.map((m) => ({
+      ...transformMembership(m),
+      user: {
+        firstName: m.users.first_name,
+        lastName: m.users.last_name,
+        email: m.users.email,
+        avatarUrl: m.users.avatar_url,
+      },
+    }));
   }),
 
   /**
@@ -83,31 +135,46 @@ export const membershipRouter = router({
    * Used for team management
    */
   listAll: adminProcedure.query(async ({ ctx }) => {
-    const members = await ctx.prisma.organizationMembership.findMany({
-      where: {
-        organizationId: ctx.organizationId,
-        status: 'ACTIVE', // Exclude removed members (shown in separate banner)
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            avatarUrl: true,
-            timezone: true,
-          },
-        },
-      },
-      orderBy: [
-        { role: 'asc' },
-        { user: { lastName: 'asc' } },
-        { user: { firstName: 'asc' } },
-      ],
+    const { data: members, error } = await ctx.supabase
+      .from('organization_memberships')
+      .select(`
+        *,
+        users (
+          id, first_name, last_name, email, avatar_url, timezone
+        )
+      `)
+      .eq('organization_id', ctx.organizationId)
+      .eq('status', 'ACTIVE');
+
+    if (error) {
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: error.message,
+      });
+    }
+
+    // Sort by role, then lastName, then firstName
+    const roleOrder = ['SUPER_ADMIN', 'INSTRUCTOR', 'STUDENT', 'GUARDIAN'];
+    const typedMembers = (members ?? []) as MembershipWithUserFull[];
+    const sorted = typedMembers.sort((a, b) => {
+      const roleCompare = roleOrder.indexOf(a.role) - roleOrder.indexOf(b.role);
+      if (roleCompare !== 0) return roleCompare;
+      const lastNameCompare = (a.users.last_name ?? '').localeCompare(b.users.last_name ?? '');
+      if (lastNameCompare !== 0) return lastNameCompare;
+      return (a.users.first_name ?? '').localeCompare(b.users.first_name ?? '');
     });
 
-    return members;
+    return sorted.map((m) => ({
+      ...transformMembership(m),
+      user: {
+        id: m.users.id,
+        firstName: m.users.first_name,
+        lastName: m.users.last_name,
+        email: m.users.email,
+        avatarUrl: m.users.avatar_url,
+        timezone: m.users.timezone,
+      },
+    }));
   }),
 
   /**
@@ -115,46 +182,71 @@ export const membershipRouter = router({
    * Returns soft-deleted members within 30-day restoration window
    */
   listRemoved: adminProcedure.query(async ({ ctx }) => {
-    const removedMembers = await ctx.prisma.organizationMembership.findMany({
-      where: {
-        organizationId: ctx.organizationId,
-        status: 'REMOVED',
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            avatarUrl: true,
-          },
-        },
-        _count: {
-          select: {
-            qualifiedAppointmentTypes: true,
-            availability: true,
-            instructorAppointments: true,
-          },
-        },
-      },
-      orderBy: { removedAt: 'desc' },
-    });
+    const { data: removedMembers, error } = await ctx.supabase
+      .from('organization_memberships')
+      .select(`
+        *,
+        users (
+          id, first_name, last_name, email, avatar_url
+        )
+      `)
+      .eq('organization_id', ctx.organizationId)
+      .eq('status', 'REMOVED')
+      .order('removed_at', { ascending: false });
 
-    // Add days remaining for each member
-    return removedMembers.map((member) => {
-      const daysSinceRemoval = member.removedAt
-        ? differenceInDays(new Date(), member.removedAt)
-        : 0;
-      const daysRemaining = Math.max(0, SOFT_DELETE_RETENTION_DAYS - daysSinceRemoval);
+    if (error) {
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: error.message,
+      });
+    }
 
-      return {
-        ...member,
-        daysSinceRemoval,
-        daysRemaining,
-        isExpired: daysRemaining === 0,
-      };
-    });
+    // Get counts for each member in parallel
+    const typedRemovedMembers = (removedMembers ?? []) as MembershipWithUserBasic[];
+    const membersWithCounts = await Promise.all(
+      typedRemovedMembers.map(async (member) => {
+        const [qualifiedTypes, availability, appointments] = await Promise.all([
+          ctx.supabase
+            .from('appointment_type_instructors')
+            .select('*', { count: 'exact', head: true })
+            .eq('instructor_id', member.id),
+          ctx.supabase
+            .from('instructor_availability')
+            .select('*', { count: 'exact', head: true })
+            .eq('membership_id', member.id),
+          ctx.supabase
+            .from('appointments')
+            .select('*', { count: 'exact', head: true })
+            .eq('instructor_membership_id', member.id),
+        ]);
+
+        const daysSinceRemoval = member.removed_at
+          ? differenceInDays(new Date(), new Date(member.removed_at))
+          : 0;
+        const daysRemaining = Math.max(0, SOFT_DELETE_RETENTION_DAYS - daysSinceRemoval);
+
+        return {
+          ...transformMembership(member),
+          user: {
+            id: member.users.id,
+            firstName: member.users.first_name,
+            lastName: member.users.last_name,
+            email: member.users.email,
+            avatarUrl: member.users.avatar_url,
+          },
+          _count: {
+            qualifiedAppointmentTypes: qualifiedTypes.count ?? 0,
+            availability: availability.count ?? 0,
+            instructorAppointments: appointments.count ?? 0,
+          },
+          daysSinceRemoval,
+          daysRemaining,
+          isExpired: daysRemaining === 0,
+        };
+      })
+    );
+
+    return membersWithCounts;
   }),
 
   /**
@@ -164,15 +256,15 @@ export const membershipRouter = router({
   restore: adminProcedure
     .input(z.object({ membershipId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const membership = await ctx.prisma.organizationMembership.findFirst({
-        where: {
-          id: input.membershipId,
-          organizationId: ctx.organizationId,
-          status: 'REMOVED',
-        },
-      });
+      const { data: membership, error: findError } = await ctx.supabase
+        .from('organization_memberships')
+        .select('*')
+        .eq('id', input.membershipId)
+        .eq('organization_id', ctx.organizationId)
+        .eq('status', 'REMOVED')
+        .single();
 
-      if (!membership) {
+      if (findError || !membership) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Removed member not found',
@@ -180,8 +272,8 @@ export const membershipRouter = router({
       }
 
       // Check 30-day window
-      const daysSinceRemoval = membership.removedAt
-        ? differenceInDays(new Date(), membership.removedAt)
+      const daysSinceRemoval = membership.removed_at
+        ? differenceInDays(new Date(), new Date(membership.removed_at))
         : 0;
 
       if (daysSinceRemoval > SOFT_DELETE_RETENTION_DAYS) {
@@ -191,14 +283,21 @@ export const membershipRouter = router({
         });
       }
 
-      await ctx.prisma.organizationMembership.update({
-        where: { id: input.membershipId },
-        data: {
+      const { error } = await ctx.supabase
+        .from('organization_memberships')
+        .update({
           status: 'ACTIVE',
-          removedAt: null,
-          removedBy: null,
-        },
-      });
+          removed_at: null,
+          removed_by: null,
+        })
+        .eq('id', input.membershipId);
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
 
       return { success: true };
     }),
@@ -210,15 +309,15 @@ export const membershipRouter = router({
   permanentlyDelete: adminProcedure
     .input(z.object({ membershipId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const membership = await ctx.prisma.organizationMembership.findFirst({
-        where: {
-          id: input.membershipId,
-          organizationId: ctx.organizationId,
-          status: 'REMOVED',
-        },
-      });
+      const { data: membership, error: findError } = await ctx.supabase
+        .from('organization_memberships')
+        .select('id')
+        .eq('id', input.membershipId)
+        .eq('organization_id', ctx.organizationId)
+        .eq('status', 'REMOVED')
+        .single();
 
-      if (!membership) {
+      if (findError || !membership) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Removed member not found',
@@ -226,9 +325,17 @@ export const membershipRouter = router({
       }
 
       // Hard delete - CASCADE will remove qualifications, availability, etc.
-      await ctx.prisma.organizationMembership.delete({
-        where: { id: input.membershipId },
-      });
+      const { error } = await ctx.supabase
+        .from('organization_memberships')
+        .delete()
+        .eq('id', input.membershipId);
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
 
       return { success: true };
     }),

@@ -1,7 +1,12 @@
 import { router, protectedProcedure, adminProcedure, instructorProcedure } from '../init';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { AppointmentStatus, AppointmentTypeStatus, LocationMode, MembershipRole, Prisma } from '@prisma/client';
+import {
+  AppointmentStatus,
+  AppointmentTypeStatus,
+  LocationMode,
+  MembershipRole,
+} from '@/types/database';
 import {
   sanitizeText,
   sanitizeRichText,
@@ -10,6 +15,20 @@ import {
   isValidDuration,
   isValidQuantity,
 } from '@/lib/utils/sanitize';
+
+// Common select for appointment with relations
+const appointmentSelectWithRelations = `
+  *,
+  student:organization_memberships!appointments_student_id_fkey (
+    *,
+    users (first_name, last_name, email)
+  ),
+  instructor:organization_memberships!appointments_instructor_id_fkey (
+    *,
+    users (first_name, last_name, email)
+  ),
+  appointment_types (id, name)
+`;
 
 /**
  * Appointments Router
@@ -85,14 +104,14 @@ export const appointmentsRouter = router({
       }
 
       // Validate student exists in organization
-      const student = await ctx.prisma.organizationMembership.findFirst({
-        where: {
-          id: input.studentId,
-          organizationId: ctx.organizationId,
-          role: MembershipRole.STUDENT,
-          status: 'ACTIVE',
-        },
-      });
+      const { data: student } = await ctx.supabase
+        .from('organization_memberships')
+        .select('id')
+        .eq('id', input.studentId)
+        .eq('organization_id', ctx.organizationId)
+        .eq('role', MembershipRole.STUDENT)
+        .eq('status', 'ACTIVE')
+        .single();
 
       if (!student) {
         throw new TRPCError({
@@ -102,14 +121,14 @@ export const appointmentsRouter = router({
       }
 
       // Validate instructor exists in organization
-      const instructor = await ctx.prisma.organizationMembership.findFirst({
-        where: {
-          id: input.instructorId,
-          organizationId: ctx.organizationId,
-          role: MembershipRole.INSTRUCTOR,
-          status: 'ACTIVE',
-        },
-      });
+      const { data: instructor } = await ctx.supabase
+        .from('organization_memberships')
+        .select('id')
+        .eq('id', input.instructorId)
+        .eq('organization_id', ctx.organizationId)
+        .eq('role', MembershipRole.INSTRUCTOR)
+        .eq('status', 'ACTIVE')
+        .single();
 
       if (!instructor) {
         throw new TRPCError({
@@ -122,27 +141,25 @@ export const appointmentsRouter = router({
         title: string;
         description: string | null;
         duration: number;
-        isOnline: boolean;
-        videoLink: string | null;
-        locationAddress: string | null;
-        appointmentTypeId: string | null;
+        is_online: boolean;
+        video_link: string | null;
+        location_address: string | null;
+        appointment_type_id: string | null;
       };
 
       if (input.appointmentTypeId) {
         // Allocate from appointment type
-        const appointmentType = await ctx.prisma.appointmentType.findFirst({
-          where: {
-            id: input.appointmentTypeId,
-            organizationId: ctx.organizationId,
-          },
-          include: {
-            instructors: {
-              select: { instructorId: true },
-            },
-          },
-        });
+        const { data: appointmentType, error: typeError } = await ctx.supabase
+          .from('appointment_types')
+          .select(`
+            *,
+            appointment_type_instructors (instructor_id)
+          `)
+          .eq('id', input.appointmentTypeId)
+          .eq('organization_id', ctx.organizationId)
+          .single();
 
-        if (!appointmentType) {
+        if (typeError || !appointmentType) {
           throw new TRPCError({
             code: 'NOT_FOUND',
             message: 'Appointment type not found',
@@ -157,9 +174,14 @@ export const appointmentsRouter = router({
           });
         }
 
-        // Instructor must be qualified
-        const isQualified = appointmentType.instructors.some(
-          (i) => i.instructorId === input.instructorId
+        // Type-safe access to instructor join
+        type TypeWithInstructors = typeof appointmentType & {
+          appointment_type_instructors: { instructor_id: string }[];
+        };
+        const typedType = appointmentType as unknown as TypeWithInstructors;
+        const instructors = typedType.appointment_type_instructors ?? [];
+        const isQualified = instructors.some(
+          (i) => i.instructor_id === input.instructorId
         );
 
         if (!isQualified) {
@@ -170,7 +192,7 @@ export const appointmentsRouter = router({
         }
 
         // Determine location settings based on appointment type's locationMode
-        const isOnline = input.isOnline ?? (appointmentType.locationMode === LocationMode.ONLINE);
+        const isOnline = input.isOnline ?? (appointmentType.location_mode === LocationMode.ONLINE);
 
         // Use appointment type defaults, allow overrides
         appointmentData = {
@@ -179,10 +201,10 @@ export const appointmentsRouter = router({
             ? sanitizeRichText(input.description)
             : appointmentType.description,
           duration: input.duration ?? appointmentType.duration,
-          isOnline,
-          videoLink: input.videoLink ? sanitizeUrl(input.videoLink) : null,
-          locationAddress: input.locationAddress ? sanitizeAddress(input.locationAddress) : null,
-          appointmentTypeId: input.appointmentTypeId,
+          is_online: isOnline,
+          video_link: input.videoLink ? sanitizeUrl(input.videoLink) : null,
+          location_address: input.locationAddress ? sanitizeAddress(input.locationAddress) : null,
+          appointment_type_id: input.appointmentTypeId,
         };
       } else {
         // Ad-hoc appointment - all fields required
@@ -242,73 +264,48 @@ export const appointmentsRouter = router({
           title: sanitizeText(input.title, 200),
           description: input.description ? sanitizeRichText(input.description) : null,
           duration: input.duration,
-          isOnline: input.isOnline,
-          videoLink: sanitizedVideoLink,
-          locationAddress: input.locationAddress ? sanitizeAddress(input.locationAddress) : null,
-          appointmentTypeId: null,
+          is_online: input.isOnline,
+          video_link: sanitizedVideoLink,
+          location_address: input.locationAddress ? sanitizeAddress(input.locationAddress) : null,
+          appointment_type_id: null,
         };
       }
 
-      // Create appointments
-      const appointments = await ctx.prisma.$transaction(async (tx) => {
-        const created = [];
+      // Create appointments (one by one for bulk)
+      const created = [];
 
-        for (let i = 0; i < input.quantity; i++) {
-          const appointment = await tx.appointment.create({
-            data: {
-              organizationId: ctx.organizationId!,
-              appointmentTypeId: appointmentData.appointmentTypeId,
-              studentId: input.studentId,
-              instructorId: input.instructorId,
-              createdBy: ctx.membershipId!,
-              title: appointmentData.title,
-              description: appointmentData.description,
-              duration: appointmentData.duration,
-              status: AppointmentStatus.UNBOOKED,
-              isOnline: appointmentData.isOnline,
-              videoLink: appointmentData.videoLink,
-              locationAddress: appointmentData.locationAddress,
-              notes: input.notes ? sanitizeRichText(input.notes) : null,
-            },
-            include: {
-              student: {
-                include: {
-                  user: {
-                    select: {
-                      firstName: true,
-                      lastName: true,
-                      email: true,
-                    },
-                  },
-                },
-              },
-              instructor: {
-                include: {
-                  user: {
-                    select: {
-                      firstName: true,
-                      lastName: true,
-                      email: true,
-                    },
-                  },
-                },
-              },
-              appointmentType: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-            },
+      for (let i = 0; i < input.quantity; i++) {
+        const { data: appointment, error: createError } = await ctx.supabase
+          .from('appointments')
+          .insert({
+            organization_id: ctx.organizationId!,
+            appointment_type_id: appointmentData.appointment_type_id,
+            student_id: input.studentId,
+            instructor_id: input.instructorId,
+            created_by: ctx.membershipId!,
+            title: appointmentData.title,
+            description: appointmentData.description,
+            duration: appointmentData.duration,
+            status: AppointmentStatus.UNBOOKED,
+            is_online: appointmentData.is_online,
+            video_link: appointmentData.video_link,
+            location_address: appointmentData.location_address,
+            notes: input.notes ? sanitizeRichText(input.notes) : null,
+          })
+          .select(appointmentSelectWithRelations)
+          .single();
+
+        if (createError) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: createError.message,
           });
-
-          created.push(appointment);
         }
 
-        return created;
-      });
+        created.push(appointment);
+      }
 
-      return { appointments };
+      return { appointments: created };
     }),
 
   /**
@@ -330,14 +327,14 @@ export const appointmentsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       // Validate student
-      const student = await ctx.prisma.organizationMembership.findFirst({
-        where: {
-          id: input.studentId,
-          organizationId: ctx.organizationId,
-          role: MembershipRole.STUDENT,
-          status: 'ACTIVE',
-        },
-      });
+      const { data: student } = await ctx.supabase
+        .from('organization_memberships')
+        .select('id')
+        .eq('id', input.studentId)
+        .eq('organization_id', ctx.organizationId)
+        .eq('role', MembershipRole.STUDENT)
+        .eq('status', 'ACTIVE')
+        .single();
 
       if (!student) {
         throw new TRPCError({
@@ -355,17 +352,19 @@ export const appointmentsRouter = router({
         });
       }
 
-      // Validate all allocations
+      // Validate all allocations first
+      const appointmentTypes: Map<string, any> = new Map();
+
       for (const allocation of input.allocations) {
         // Validate instructor
-        const instructor = await ctx.prisma.organizationMembership.findFirst({
-          where: {
-            id: allocation.instructorId,
-            organizationId: ctx.organizationId,
-            role: MembershipRole.INSTRUCTOR,
-            status: 'ACTIVE',
-          },
-        });
+        const { data: instructor } = await ctx.supabase
+          .from('organization_memberships')
+          .select('id')
+          .eq('id', allocation.instructorId)
+          .eq('organization_id', ctx.organizationId)
+          .eq('role', MembershipRole.INSTRUCTOR)
+          .eq('status', 'ACTIVE')
+          .single();
 
         if (!instructor) {
           throw new TRPCError({
@@ -375,17 +374,15 @@ export const appointmentsRouter = router({
         }
 
         // Validate appointment type
-        const appointmentType = await ctx.prisma.appointmentType.findFirst({
-          where: {
-            id: allocation.appointmentTypeId,
-            organizationId: ctx.organizationId,
-          },
-          include: {
-            instructors: {
-              select: { instructorId: true },
-            },
-          },
-        });
+        const { data: appointmentType } = await ctx.supabase
+          .from('appointment_types')
+          .select(`
+            *,
+            appointment_type_instructors (instructor_id)
+          `)
+          .eq('id', allocation.appointmentTypeId)
+          .eq('organization_id', ctx.organizationId)
+          .single();
 
         if (!appointmentType) {
           throw new TRPCError({
@@ -401,8 +398,14 @@ export const appointmentsRouter = router({
           });
         }
 
-        const isQualified = appointmentType.instructors.some(
-          (i) => i.instructorId === allocation.instructorId
+        // Type-safe access to instructor join
+        type BatchTypeWithInstructors = typeof appointmentType & {
+          appointment_type_instructors: { instructor_id: string }[];
+        };
+        const typedType = appointmentType as unknown as BatchTypeWithInstructors;
+        const instructors = typedType.appointment_type_instructors ?? [];
+        const isQualified = instructors.some(
+          (i) => i.instructor_id === allocation.instructorId
         );
 
         if (!isQualified) {
@@ -411,75 +414,48 @@ export const appointmentsRouter = router({
             message: `Instructor is not qualified for appointment type: ${appointmentType.name}`,
           });
         }
+
+        appointmentTypes.set(allocation.appointmentTypeId, appointmentType);
       }
 
-      // Create all appointments in transaction
-      const appointments = await ctx.prisma.$transaction(async (tx) => {
-        const created = [];
+      // Create all appointments
+      const created = [];
 
-        for (const allocation of input.allocations) {
-          const appointmentType = await tx.appointmentType.findUnique({
-            where: { id: allocation.appointmentTypeId },
-          });
+      for (const allocation of input.allocations) {
+        const appointmentType = appointmentTypes.get(allocation.appointmentTypeId)!;
 
-          if (!appointmentType) continue;
+        for (let i = 0; i < allocation.quantity; i++) {
+          const { data: appointment, error: createError } = await ctx.supabase
+            .from('appointments')
+            .insert({
+              organization_id: ctx.organizationId!,
+              appointment_type_id: allocation.appointmentTypeId,
+              student_id: input.studentId,
+              instructor_id: allocation.instructorId,
+              created_by: ctx.membershipId!,
+              title: appointmentType.name,
+              description: appointmentType.description,
+              duration: appointmentType.duration,
+              status: AppointmentStatus.UNBOOKED,
+              is_online: appointmentType.location_mode === LocationMode.ONLINE,
+              video_link: null,
+              location_address: null,
+            })
+            .select(appointmentSelectWithRelations)
+            .single();
 
-          for (let i = 0; i < allocation.quantity; i++) {
-            const appointment = await tx.appointment.create({
-              data: {
-                organizationId: ctx.organizationId!,
-                appointmentTypeId: allocation.appointmentTypeId,
-                studentId: input.studentId,
-                instructorId: allocation.instructorId,
-                createdBy: ctx.membershipId!,
-                title: appointmentType.name,
-                description: appointmentType.description,
-                duration: appointmentType.duration,
-                status: AppointmentStatus.UNBOOKED,
-                isOnline: appointmentType.locationMode === LocationMode.ONLINE,
-                videoLink: null,
-                locationAddress: null,
-              },
-              include: {
-                student: {
-                  include: {
-                    user: {
-                      select: {
-                        firstName: true,
-                        lastName: true,
-                        email: true,
-                      },
-                    },
-                  },
-                },
-                instructor: {
-                  include: {
-                    user: {
-                      select: {
-                        firstName: true,
-                        lastName: true,
-                        email: true,
-                      },
-                    },
-                  },
-                },
-                appointmentType: {
-                  select: {
-                    id: true,
-                    name: true,
-                  },
-                },
-              },
+          if (createError) {
+            throw new TRPCError({
+              code: 'INTERNAL_SERVER_ERROR',
+              message: createError.message,
             });
-
-            created.push(appointment);
           }
+
+          created.push(appointment);
         }
+      }
 
-        return created;
-      });
-
-      return appointments;
+      return created;
     }),
 
   /**
@@ -498,69 +474,43 @@ export const appointmentsRouter = router({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      // Build where clause based on role
-      const where: Prisma.AppointmentWhereInput = {
-        organizationId: ctx.organizationId,
-        deletedAt: null,
-      };
+      // Build query
+      let query = ctx.supabase
+        .from('appointments')
+        .select(appointmentSelectWithRelations)
+        .eq('organization_id', ctx.organizationId)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false });
 
       // Role-based filtering
       const membershipId = ctx.membershipId;
       if (ctx.role === MembershipRole.INSTRUCTOR && membershipId) {
-        where.instructorId = membershipId;
+        query = query.eq('instructor_id', membershipId);
       } else if (ctx.role === MembershipRole.STUDENT && membershipId) {
-        where.studentId = membershipId;
+        query = query.eq('student_id', membershipId);
       }
 
       // Apply optional filters
       if (input?.studentId) {
-        where.studentId = input.studentId;
+        query = query.eq('student_id', input.studentId);
       }
       if (input?.instructorId) {
-        where.instructorId = input.instructorId;
+        query = query.eq('instructor_id', input.instructorId);
       }
       if (input?.status) {
-        where.status = input.status;
+        query = query.eq('status', input.status);
       }
 
-      const appointments = await ctx.prisma.appointment.findMany({
-        where,
-        include: {
-          student: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true,
-                  email: true,
-                },
-              },
-            },
-          },
-          instructor: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true,
-                  email: true,
-                },
-              },
-            },
-          },
-          appointmentType: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-        },
-        orderBy: {
-          createdAt: 'desc',
-        },
-      });
+      const { data: appointments, error } = await query;
 
-      return appointments;
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      return appointments ?? [];
     }),
 
   /**
@@ -573,55 +523,20 @@ export const appointmentsRouter = router({
       })
     )
     .query(async ({ ctx, input }) => {
-      const appointment = await ctx.prisma.appointment.findFirst({
-        where: {
-          id: input.id,
-          organizationId: ctx.organizationId,
-        },
-        include: {
-          student: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true,
-                  email: true,
-                },
-              },
-            },
-          },
-          instructor: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true,
-                  email: true,
-                },
-              },
-            },
-          },
-          creator: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true,
-                  email: true,
-                },
-              },
-            },
-          },
-          appointmentType: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-        },
-      });
+      const { data: appointment, error } = await ctx.supabase
+        .from('appointments')
+        .select(`
+          ${appointmentSelectWithRelations},
+          creator:organization_memberships!appointments_created_by_fkey (
+            *,
+            users (first_name, last_name, email)
+          )
+        `)
+        .eq('id', input.id)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!appointment) {
+      if (error || !appointment) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Appointment not found',
@@ -629,14 +544,14 @@ export const appointmentsRouter = router({
       }
 
       // Check access based on role
-      if (ctx.role === MembershipRole.INSTRUCTOR && appointment.instructorId !== ctx.membershipId) {
+      if (ctx.role === MembershipRole.INSTRUCTOR && appointment.instructor_id !== ctx.membershipId) {
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: 'You can only view your own appointments',
         });
       }
 
-      if (ctx.role === MembershipRole.STUDENT && appointment.studentId !== ctx.membershipId) {
+      if (ctx.role === MembershipRole.STUDENT && appointment.student_id !== ctx.membershipId) {
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: 'You can only view your own appointments',
@@ -665,14 +580,14 @@ export const appointmentsRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const appointment = await ctx.prisma.appointment.findFirst({
-        where: {
-          id: input.id,
-          organizationId: ctx.organizationId,
-        },
-      });
+      const { data: appointment, error: findError } = await ctx.supabase
+        .from('appointments')
+        .select('*')
+        .eq('id', input.id)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!appointment) {
+      if (findError || !appointment) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Appointment not found',
@@ -682,7 +597,7 @@ export const appointmentsRouter = router({
       // Check permission - creator or admin
       if (
         ctx.role !== MembershipRole.SUPER_ADMIN &&
-        appointment.createdBy !== ctx.membershipId
+        appointment.created_by !== ctx.membershipId
       ) {
         throw new TRPCError({
           code: 'FORBIDDEN',
@@ -715,9 +630,9 @@ export const appointmentsRouter = router({
       }
 
       // Determine final location values
-      const finalIsOnline = input.isOnline ?? appointment.isOnline;
-      const finalVideoLink = input.videoLink !== undefined ? input.videoLink : appointment.videoLink;
-      const finalAddress = input.locationAddress !== undefined ? input.locationAddress : appointment.locationAddress;
+      const finalIsOnline = input.isOnline ?? appointment.is_online;
+      const finalVideoLink = input.videoLink !== undefined ? input.videoLink : appointment.video_link;
+      const finalAddress = input.locationAddress !== undefined ? input.locationAddress : appointment.location_address;
 
       // Validate location requirements
       if (finalIsOnline && !finalVideoLink) {
@@ -751,8 +666,8 @@ export const appointmentsRouter = router({
       }
 
       // Build update data
-      const updateData: Prisma.AppointmentUpdateInput = {
-        version: { increment: 1 },
+      const updateData: Record<string, unknown> = {
+        version: appointment.version + 1,
       };
 
       if (input.title !== undefined) {
@@ -765,52 +680,31 @@ export const appointmentsRouter = router({
         updateData.duration = input.duration;
       }
       if (input.isOnline !== undefined) {
-        updateData.isOnline = input.isOnline;
+        updateData.is_online = input.isOnline;
       }
       if (sanitizedVideoLink !== undefined) {
-        updateData.videoLink = sanitizedVideoLink;
+        updateData.video_link = sanitizedVideoLink;
       }
       if (input.locationAddress !== undefined) {
-        updateData.locationAddress = input.locationAddress ? sanitizeAddress(input.locationAddress) : null;
+        updateData.location_address = input.locationAddress ? sanitizeAddress(input.locationAddress) : null;
       }
       if (input.notes !== undefined) {
         updateData.notes = input.notes ? sanitizeRichText(input.notes) : null;
       }
 
-      const updated = await ctx.prisma.appointment.update({
-        where: { id: input.id },
-        data: updateData,
-        include: {
-          student: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true,
-                  email: true,
-                },
-              },
-            },
-          },
-          instructor: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true,
-                  email: true,
-                },
-              },
-            },
-          },
-          appointmentType: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-        },
-      });
+      const { data: updated, error: updateError } = await ctx.supabase
+        .from('appointments')
+        .update(updateData)
+        .eq('id', input.id)
+        .select(appointmentSelectWithRelations)
+        .single();
+
+      if (updateError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: updateError.message,
+        });
+      }
 
       return updated;
     }),
@@ -826,14 +720,14 @@ export const appointmentsRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const appointment = await ctx.prisma.appointment.findFirst({
-        where: {
-          id: input.id,
-          organizationId: ctx.organizationId,
-        },
-      });
+      const { data: appointment, error: findError } = await ctx.supabase
+        .from('appointments')
+        .select('*')
+        .eq('id', input.id)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!appointment) {
+      if (findError || !appointment) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Appointment not found',
@@ -843,7 +737,7 @@ export const appointmentsRouter = router({
       // Check permission
       if (
         ctx.role !== MembershipRole.SUPER_ADMIN &&
-        appointment.instructorId !== ctx.membershipId
+        appointment.instructor_id !== ctx.membershipId
       ) {
         throw new TRPCError({
           code: 'FORBIDDEN',
@@ -859,13 +753,20 @@ export const appointmentsRouter = router({
         });
       }
 
-      await ctx.prisma.appointment.update({
-        where: { id: input.id },
-        data: {
+      const { error: updateError } = await ctx.supabase
+        .from('appointments')
+        .update({
           status: AppointmentStatus.CANCELLED,
-          deletedAt: new Date(),
-        },
-      });
+          deleted_at: new Date().toISOString(),
+        })
+        .eq('id', input.id);
+
+      if (updateError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: updateError.message,
+        });
+      }
 
       return { success: true };
     }),
@@ -882,14 +783,14 @@ export const appointmentsRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const appointment = await ctx.prisma.appointment.findFirst({
-        where: {
-          id: input.id,
-          organizationId: ctx.organizationId,
-        },
-      });
+      const { data: appointment, error: findError } = await ctx.supabase
+        .from('appointments')
+        .select('*')
+        .eq('id', input.id)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!appointment) {
+      if (findError || !appointment) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Appointment not found',
@@ -899,7 +800,7 @@ export const appointmentsRouter = router({
       // Check permission
       if (
         ctx.role !== MembershipRole.SUPER_ADMIN &&
-        appointment.instructorId !== ctx.membershipId
+        appointment.instructor_id !== ctx.membershipId
       ) {
         throw new TRPCError({
           code: 'FORBIDDEN',
@@ -915,43 +816,22 @@ export const appointmentsRouter = router({
         });
       }
 
-      const updated = await ctx.prisma.appointment.update({
-        where: { id: input.id },
-        data: {
+      const { data: updated, error: updateError } = await ctx.supabase
+        .from('appointments')
+        .update({
           status: AppointmentStatus.COMPLETED,
           notes: input.notes ? sanitizeRichText(input.notes) : appointment.notes,
-        },
-        include: {
-          student: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true,
-                  email: true,
-                },
-              },
-            },
-          },
-          instructor: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true,
-                  email: true,
-                },
-              },
-            },
-          },
-          appointmentType: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-        },
-      });
+        })
+        .eq('id', input.id)
+        .select(appointmentSelectWithRelations)
+        .single();
+
+      if (updateError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: updateError.message,
+        });
+      }
 
       return updated;
     }),
@@ -967,14 +847,14 @@ export const appointmentsRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const appointment = await ctx.prisma.appointment.findFirst({
-        where: {
-          id: input.id,
-          organizationId: ctx.organizationId,
-        },
-      });
+      const { data: appointment, error: findError } = await ctx.supabase
+        .from('appointments')
+        .select('*')
+        .eq('id', input.id)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!appointment) {
+      if (findError || !appointment) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Appointment not found',
@@ -984,7 +864,7 @@ export const appointmentsRouter = router({
       // Check permission - creator or admin
       if (
         ctx.role !== MembershipRole.SUPER_ADMIN &&
-        appointment.createdBy !== ctx.membershipId
+        appointment.created_by !== ctx.membershipId
       ) {
         throw new TRPCError({
           code: 'FORBIDDEN',
@@ -1007,10 +887,17 @@ export const appointmentsRouter = router({
         }
       }
 
-      await ctx.prisma.appointment.update({
-        where: { id: input.id },
-        data: { deletedAt: new Date() },
-      });
+      const { error: updateError } = await ctx.supabase
+        .from('appointments')
+        .update({ deleted_at: new Date().toISOString() })
+        .eq('id', input.id);
+
+      if (updateError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: updateError.message,
+        });
+      }
 
       return { success: true };
     }),

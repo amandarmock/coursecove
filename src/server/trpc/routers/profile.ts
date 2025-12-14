@@ -24,28 +24,29 @@ export const profileRouter = router({
    * Get current user's profile
    */
   get: userOnlyProcedure.query(async ({ ctx }) => {
-    const user = await ctx.prisma.user.findUnique({
-      where: { clerkUserId: ctx.userId },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        avatarUrl: true,
-        timezone: true,
-        status: true,
-        createdAt: true,
-      },
-    });
+    const { data: user, error } = await ctx.supabase
+      .from('users')
+      .select('id, email, first_name, last_name, avatar_url, timezone, status, created_at')
+      .eq('clerk_user_id', ctx.userId)
+      .single();
 
-    if (!user) {
+    if (error || !user) {
       throw new TRPCError({
         code: 'NOT_FOUND',
         message: 'User not found',
       });
     }
 
-    return user;
+    return {
+      id: user.id,
+      email: user.email,
+      firstName: user.first_name,
+      lastName: user.last_name,
+      avatarUrl: user.avatar_url,
+      timezone: user.timezone,
+      status: user.status,
+      createdAt: user.created_at,
+    };
   }),
 
   /**
@@ -66,14 +67,19 @@ export const profileRouter = router({
         });
       }
 
-      const user = await ctx.prisma.user.update({
-        where: { clerkUserId: ctx.userId },
-        data: { timezone: input.timezone },
-        select: {
-          id: true,
-          timezone: true,
-        },
-      });
+      const { data: user, error } = await ctx.supabase
+        .from('users')
+        .update({ timezone: input.timezone })
+        .eq('clerk_user_id', ctx.userId)
+        .select('id, timezone')
+        .single();
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
 
       return user;
     }),
@@ -89,32 +95,46 @@ export const profileRouter = router({
       })
     )
     .query(async ({ ctx, input }) => {
-      // Get membership first to verify org access
-      const membership = await ctx.prisma.organizationMembership.findFirst({
-        where: {
-          id: input.membershipId,
-          organizationId: ctx.organizationId,
-        },
-        include: {
-          user: {
-            select: {
-              id: true,
-              email: true,
-              firstName: true,
-              lastName: true,
-              avatarUrl: true,
-              timezone: true,
-              status: true,
-              createdAt: true,
-            },
-          },
-        },
-      });
+      // Get membership with user data
+      const { data: membership, error } = await ctx.supabase
+        .from('organization_memberships')
+        .select(`
+          id, role, status, created_at,
+          users (
+            id, email, first_name, last_name, avatar_url, timezone, status, created_at
+          )
+        `)
+        .eq('id', input.membershipId)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!membership) {
+      if (error || !membership) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Member not found in this organization',
+        });
+      }
+
+      // Type-safe access to joined user data
+      type MembershipWithUser = typeof membership & {
+        users: {
+          id: string;
+          email: string;
+          first_name: string | null;
+          last_name: string | null;
+          avatar_url: string | null;
+          timezone: string | null;
+          status: string;
+          created_at: string;
+        } | null;
+      };
+      const typedMembership = membership as unknown as MembershipWithUser;
+      const user = typedMembership.users;
+
+      if (!user) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'User data not found',
         });
       }
 
@@ -123,9 +143,18 @@ export const profileRouter = router({
           id: membership.id,
           role: membership.role,
           status: membership.status,
-          createdAt: membership.createdAt,
+          createdAt: membership.created_at,
         },
-        user: membership.user,
+        user: {
+          id: user.id,
+          email: user.email,
+          firstName: user.first_name,
+          lastName: user.last_name,
+          avatarUrl: user.avatar_url,
+          timezone: user.timezone,
+          status: user.status,
+          createdAt: user.created_at,
+        },
       };
     }),
 
@@ -150,31 +179,33 @@ export const profileRouter = router({
       }
 
       // Get membership to verify org access and get userId
-      const membership = await ctx.prisma.organizationMembership.findFirst({
-        where: {
-          id: input.membershipId,
-          organizationId: ctx.organizationId,
-        },
-        select: {
-          userId: true,
-        },
-      });
+      const { data: membership, error: membershipError } = await ctx.supabase
+        .from('organization_memberships')
+        .select('user_id')
+        .eq('id', input.membershipId)
+        .eq('organization_id', ctx.organizationId)
+        .single();
 
-      if (!membership) {
+      if (membershipError || !membership) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Member not found in this organization',
         });
       }
 
-      const user = await ctx.prisma.user.update({
-        where: { id: membership.userId },
-        data: { timezone: input.timezone },
-        select: {
-          id: true,
-          timezone: true,
-        },
-      });
+      const { data: user, error } = await ctx.supabase
+        .from('users')
+        .update({ timezone: input.timezone })
+        .eq('id', membership.user_id)
+        .select('id, timezone')
+        .single();
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
 
       return user;
     }),

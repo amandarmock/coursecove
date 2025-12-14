@@ -22,8 +22,15 @@
 import { Webhook } from 'svix';
 import { headers } from 'next/headers';
 import { WebhookEvent, clerkClient } from '@clerk/nextjs/server';
-import { prisma } from '@/lib/db/prisma';
+import { supabaseAdmin } from '@/lib/db/supabase';
 import { inngest } from '@/inngest/client';
+import type { Json } from '@/types/supabase';
+import type {
+  UserJSON,
+  OrganizationJSON,
+  OrganizationMembershipJSON,
+  DeletedObjectJSON,
+} from '@clerk/backend';
 
 /**
  * POST /api/webhooks/clerk
@@ -80,9 +87,11 @@ export async function POST(req: Request) {
   // STEP 4: Check idempotency
   // ============================================
   try {
-    const existingEvent = await prisma.webhookEvent.findUnique({
-      where: { webhookId: svix_id },
-    });
+    const { data: existingEvent } = await supabaseAdmin
+      .from('webhook_events')
+      .select('status, attempts')
+      .eq('webhook_id', svix_id)
+      .single();
 
     if (existingEvent?.status === 'completed') {
       console.log('✓ Webhook already processed, skipping:', svix_id);
@@ -90,19 +99,22 @@ export async function POST(req: Request) {
     }
 
     // Create or update webhook event record
-    await prisma.webhookEvent.upsert({
-      where: { webhookId: svix_id },
-      update: {
-        attempts: { increment: 1 },
-      },
-      create: {
-        webhookId: svix_id,
-        eventType: evt.type,
-        payload: evt.data as any,
-        status: 'pending',
-        attempts: 1,
-      },
-    });
+    if (existingEvent) {
+      await supabaseAdmin
+        .from('webhook_events')
+        .update({ attempts: (existingEvent.attempts ?? 0) + 1 })
+        .eq('webhook_id', svix_id);
+    } else {
+      await supabaseAdmin
+        .from('webhook_events')
+        .insert({
+          webhook_id: svix_id,
+          event_type: evt.type,
+          payload: evt.data as unknown as Json,
+          status: 'pending',
+          attempts: 1,
+        });
+    }
   } catch (error) {
     // If this fails, continue anyway - we'll still try to process
     console.error('⚠️ Failed to check/create webhook event:', error);
@@ -123,13 +135,13 @@ export async function POST(req: Request) {
     }
 
     // Success! Mark as completed
-    await prisma.webhookEvent.update({
-      where: { webhookId: svix_id },
-      data: {
+    await supabaseAdmin
+      .from('webhook_events')
+      .update({
         status: 'completed',
-        processedAt: new Date(),
-      },
-    }).catch(err => console.error('Failed to update webhook status:', err));
+        processed_at: new Date().toISOString(),
+      })
+      .eq('webhook_id', svix_id);
 
     console.log('✓ Fast path success:', evt.type);
     return new Response('OK', { status: 200 });
@@ -160,9 +172,11 @@ export async function POST(req: Request) {
 
       try {
         // Check if the event was processed successfully
-        const event = await prisma.webhookEvent.findUnique({
-          where: { webhookId: svix_id },
-        });
+        const { data: event } = await supabaseAdmin
+          .from('webhook_events')
+          .select('status')
+          .eq('webhook_id', svix_id)
+          .single();
 
         if (event?.status === 'completed') {
           console.log('✓ Event already completed, returning success');
@@ -173,30 +187,39 @@ export async function POST(req: Request) {
         // This handles race conditions where data was saved but status wasn't updated
         let dataExists = false;
 
-        if (evt.type === 'user.created') {
-          const user = await prisma.user.findUnique({
-            where: { clerkUserId: (evt.data as any).id },
-          });
+        // Type-safe access to event data id field
+        const eventDataId = 'id' in evt.data ? (evt.data.id as string) : null;
+
+        if (evt.type === 'user.created' && eventDataId) {
+          const { data: user } = await supabaseAdmin
+            .from('users')
+            .select('id')
+            .eq('clerk_user_id', eventDataId)
+            .single();
           dataExists = !!user;
-        } else if (evt.type === 'organization.created') {
-          const org = await prisma.organization.findUnique({
-            where: { clerkOrganizationId: (evt.data as any).id },
-          });
+        } else if (evt.type === 'organization.created' && eventDataId) {
+          const { data: org } = await supabaseAdmin
+            .from('organizations')
+            .select('id')
+            .eq('clerk_organization_id', eventDataId)
+            .single();
           dataExists = !!org;
-        } else if (evt.type === 'organizationMembership.created') {
-          const membership = await prisma.organizationMembership.findUnique({
-            where: { clerkMembershipId: (evt.data as any).id },
-          });
+        } else if (evt.type === 'organizationMembership.created' && eventDataId) {
+          const { data: membership } = await supabaseAdmin
+            .from('organization_memberships')
+            .select('id')
+            .eq('clerk_membership_id', eventDataId)
+            .single();
           dataExists = !!membership;
         }
 
         if (dataExists) {
           console.log('✓ Data exists in database, returning success despite Inngest failure');
           // Update webhook status since data was saved
-          await prisma.webhookEvent.update({
-            where: { webhookId: svix_id },
-            data: { status: 'completed', processedAt: new Date() },
-          }).catch(() => {});
+          await supabaseAdmin
+            .from('webhook_events')
+            .update({ status: 'completed', processed_at: new Date().toISOString() })
+            .eq('webhook_id', svix_id);
           return new Response('OK', { status: 200 });
         }
       } catch {
@@ -268,72 +291,80 @@ async function processWebhookEvent(evt: WebhookEvent): Promise<void> {
 // USER EVENT HANDLERS
 // ============================================
 
-async function handleUserCreated(data: any) {
+async function handleUserCreated(data: UserJSON) {
   console.log('👤 Creating user:', data.id);
 
   const primaryEmail = data.email_addresses.find(
-    (email: any) => email.id === data.primary_email_address_id
+    (email) => email.id === data.primary_email_address_id
   );
 
-  try {
-    await prisma.user.upsert({
-      where: { clerkUserId: data.id },
-      update: {},
-      create: {
-        clerkUserId: data.id,
-        email: primaryEmail.email_address,
-        firstName: data.first_name || '',
-        lastName: data.last_name || '',
-        avatarUrl: data.image_url,
-        status: 'ACTIVE',
-      },
+  if (!primaryEmail) {
+    throw new Error(`No primary email found for user ${data.id}`);
+  }
+
+  const { error } = await supabaseAdmin
+    .from('users')
+    .upsert({
+      clerk_user_id: data.id,
+      email: primaryEmail.email_address,
+      first_name: data.first_name || '',
+      last_name: data.last_name || '',
+      avatar_url: data.image_url,
+      status: 'ACTIVE',
+    }, {
+      onConflict: 'clerk_user_id',
+      ignoreDuplicates: true,
     });
-    console.log('✓ User created in database');
-  } catch (error: any) {
-    if (error.code === 'P2002') {
-      console.log('✓ User already exists (duplicate webhook)');
-      return;
-    }
+
+  if (error && error.code !== '23505') { // 23505 = unique violation
     throw error;
   }
+
+  console.log('✓ User created in database');
 }
 
-async function handleUserUpdated(data: any) {
+async function handleUserUpdated(data: UserJSON) {
   console.log('👤 Updating user:', data.id);
 
   const primaryEmail = data.email_addresses.find(
-    (email: any) => email.id === data.primary_email_address_id
+    (email) => email.id === data.primary_email_address_id
   );
 
+  if (!primaryEmail) {
+    throw new Error(`No primary email found for user ${data.id}`);
+  }
+
   // Use upsert to handle case where user doesn't exist yet
-  await prisma.user.upsert({
-    where: { clerkUserId: data.id },
-    update: {
+  const { error } = await supabaseAdmin
+    .from('users')
+    .upsert({
+      clerk_user_id: data.id,
       email: primaryEmail.email_address,
-      firstName: data.first_name || '',
-      lastName: data.last_name || '',
-      avatarUrl: data.image_url,
-    },
-    create: {
-      clerkUserId: data.id,
-      email: primaryEmail.email_address,
-      firstName: data.first_name || '',
-      lastName: data.last_name || '',
-      avatarUrl: data.image_url,
+      first_name: data.first_name || '',
+      last_name: data.last_name || '',
+      avatar_url: data.image_url,
       status: 'ACTIVE',
-    },
-  });
+    }, {
+      onConflict: 'clerk_user_id',
+    });
+
+  if (error) throw error;
 
   console.log('✓ User updated in database');
 }
 
-async function handleUserDeleted(data: any) {
+async function handleUserDeleted(data: DeletedObjectJSON) {
+  if (!data.id) {
+    console.warn('⚠️ User delete event missing id, skipping');
+    return;
+  }
+
   console.log('👤 Soft deleting user:', data.id);
 
-  await prisma.user.updateMany({
-    where: { clerkUserId: data.id },
-    data: { status: 'DELETED' },
-  });
+  await supabaseAdmin
+    .from('users')
+    .update({ status: 'DELETED' })
+    .eq('clerk_user_id', data.id);
 
   console.log('✓ User soft deleted in database');
 }
@@ -342,83 +373,86 @@ async function handleUserDeleted(data: any) {
 // ORGANIZATION EVENT HANDLERS
 // ============================================
 
-async function handleOrganizationCreated(data: any) {
+async function handleOrganizationCreated(data: OrganizationJSON) {
   console.log('🏢 Creating organization:', data.id);
 
   const subdomain = data.slug.replace(/-/g, '');
 
-  try {
-    await prisma.organization.upsert({
-      where: { clerkOrganizationId: data.id },
-      update: {},
-      create: {
-        clerkOrganizationId: data.id,
-        name: data.name,
-        slug: data.slug,
-        subdomain: subdomain,
-        status: 'ACTIVE',
-      },
+  const { error } = await supabaseAdmin
+    .from('organizations')
+    .upsert({
+      clerk_organization_id: data.id,
+      name: data.name,
+      slug: data.slug,
+      subdomain: subdomain,
+      status: 'ACTIVE',
+    }, {
+      onConflict: 'clerk_organization_id',
+      ignoreDuplicates: true,
     });
-    console.log('✓ Organization created with subdomain:', subdomain);
 
-    // Set default organization logo
-    try {
-      const client = await clerkClient();
-      const logoUrl = `${process.env.NEXT_PUBLIC_APP_URL}/icon.png`;
-      const logoResponse = await fetch(logoUrl);
-
-      if (logoResponse.ok) {
-        const logoBlob = await logoResponse.blob();
-        await client.organizations.updateOrganizationLogo(data.id, {
-          file: logoBlob,
-        });
-        console.log('✓ Organization logo set');
-      } else {
-        console.warn('⚠️ Failed to fetch default logo:', logoResponse.status);
-      }
-    } catch (logoError) {
-      console.warn('⚠️ Failed to set organization logo:', logoError);
-      // Don't fail the webhook - org was created successfully
-    }
-  } catch (error: any) {
-    if (error.code === 'P2002') {
-      console.log('✓ Organization already exists (duplicate webhook)');
-      return;
-    }
+  if (error && error.code !== '23505') {
     throw error;
+  }
+
+  console.log('✓ Organization created with subdomain:', subdomain);
+
+  // Set default organization logo
+  try {
+    const client = await clerkClient();
+    const logoUrl = `${process.env.NEXT_PUBLIC_APP_URL}/icon.png`;
+    const logoResponse = await fetch(logoUrl);
+
+    if (logoResponse.ok) {
+      const logoBlob = await logoResponse.blob();
+      await client.organizations.updateOrganizationLogo(data.id, {
+        file: logoBlob,
+      });
+      console.log('✓ Organization logo set');
+    } else {
+      console.warn('⚠️ Failed to fetch default logo:', logoResponse.status);
+    }
+  } catch (logoError) {
+    console.warn('⚠️ Failed to set organization logo:', logoError);
+    // Don't fail the webhook - org was created successfully
   }
 }
 
-async function handleOrganizationUpdated(data: any) {
+async function handleOrganizationUpdated(data: OrganizationJSON) {
   console.log('🏢 Updating organization:', data.id);
 
   const subdomain = data.slug.replace(/-/g, '');
 
   // Use upsert to handle case where org doesn't exist yet
-  await prisma.organization.upsert({
-    where: { clerkOrganizationId: data.id },
-    update: {
-      name: data.name,
-      slug: data.slug,
-    },
-    create: {
-      clerkOrganizationId: data.id,
+  const { error } = await supabaseAdmin
+    .from('organizations')
+    .upsert({
+      clerk_organization_id: data.id,
       name: data.name,
       slug: data.slug,
       subdomain: subdomain,
       status: 'ACTIVE',
-    },
-  });
+    }, {
+      onConflict: 'clerk_organization_id',
+    });
+
+  if (error) throw error;
 
   console.log('✓ Organization updated in database');
 }
 
-async function handleOrganizationDeleted(data: any) {
+async function handleOrganizationDeleted(data: DeletedObjectJSON) {
+  if (!data.id) {
+    console.warn('⚠️ Organization delete event missing id, skipping');
+    return;
+  }
+
   console.log('🏢 Deleting organization:', data.id);
 
-  await prisma.organization.deleteMany({
-    where: { clerkOrganizationId: data.id },
-  });
+  await supabaseAdmin
+    .from('organizations')
+    .delete()
+    .eq('clerk_organization_id', data.id);
 
   console.log('✓ Organization deleted from database');
 }
@@ -427,7 +461,7 @@ async function handleOrganizationDeleted(data: any) {
 // ORGANIZATION MEMBERSHIP EVENT HANDLERS
 // ============================================
 
-async function handleMembershipCreated(data: any) {
+async function handleMembershipCreated(data: OrganizationMembershipJSON) {
   console.log('👥 Creating membership:', data.id);
 
   // Quick dependency check with improved retry logic
@@ -436,13 +470,17 @@ async function handleMembershipCreated(data: any) {
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const user = await prisma.user.findUnique({
-        where: { clerkUserId: data.public_user_data.user_id },
-      });
+      const { data: user } = await supabaseAdmin
+        .from('users')
+        .select('id, email')
+        .eq('clerk_user_id', data.public_user_data.user_id)
+        .single();
 
-      const org = await prisma.organization.findUnique({
-        where: { clerkOrganizationId: data.organization.id },
-      });
+      const { data: org } = await supabaseAdmin
+        .from('organizations')
+        .select('id, name')
+        .eq('clerk_organization_id', data.organization.id)
+        .single();
 
       if (!user || !org) {
         const missing = [];
@@ -457,46 +495,57 @@ async function handleMembershipCreated(data: any) {
 
       const role = data.role === 'org:admin' ? 'SUPER_ADMIN' : 'STUDENT';
 
-      const membership = await prisma.organizationMembership.upsert({
-        where: { clerkMembershipId: data.id },
-        update: {},
-        create: {
-          organizationId: org.id,
-          userId: user.id,
+      const { data: membership, error: membershipError } = await supabaseAdmin
+        .from('organization_memberships')
+        .upsert({
+          clerk_membership_id: data.id,
+          organization_id: org.id,
+          user_id: user.id,
           role: role,
-          clerkMembershipId: data.id,
           status: 'ACTIVE',
-        },
-      });
+        }, {
+          onConflict: 'clerk_membership_id',
+        })
+        .select()
+        .single();
+
+      if (membershipError) throw membershipError;
 
       console.log('✓ Membership created:', user.email, '→', org.name, `(${role})`);
 
       // Create sample appointment type for new org admins
-      if (role === 'SUPER_ADMIN') {
+      if (role === 'SUPER_ADMIN' && membership) {
         try {
           // Check if org already has appointment types (avoid duplicates)
-          const existingTypes = await prisma.appointmentType.count({
-            where: { organizationId: org.id },
-          });
+          const { count } = await supabaseAdmin
+            .from('appointment_types')
+            .select('*', { count: 'exact', head: true })
+            .eq('organization_id', org.id);
 
-          if (existingTypes === 0) {
-            await prisma.appointmentType.create({
-              data: {
-                organizationId: org.id,
+          if (count === 0) {
+            const { data: appointmentType, error: typeError } = await supabaseAdmin
+              .from('appointment_types')
+              .insert({
+                organization_id: org.id,
                 name: '30-Minute Consultation',
                 description: 'A sample appointment type to help you get started. Feel free to edit or delete this template.',
                 duration: 30,
                 status: 'DRAFT',
-                locationMode: 'ONLINE',
-                instructors: {
-                  create: {
-                    instructorId: membership.id,
-                    organizationId: org.id,
-                  },
-                },
-              },
-            });
-            console.log('✓ Sample appointment type created for new organization');
+                location_mode: 'ONLINE',
+              })
+              .select()
+              .single();
+
+            if (!typeError && appointmentType) {
+              await supabaseAdmin
+                .from('appointment_type_instructors')
+                .insert({
+                  appointment_type_id: appointmentType.id,
+                  instructor_id: membership.id,
+                  organization_id: org.id,
+                });
+              console.log('✓ Sample appointment type created for new organization');
+            }
           }
         } catch (appointmentTypeError) {
           console.warn('⚠️ Failed to create sample appointment type:', appointmentTypeError);
@@ -506,8 +555,9 @@ async function handleMembershipCreated(data: any) {
 
       return;
 
-    } catch (error: any) {
-      if (error.code === 'P2002') {
+    } catch (error) {
+      const dbError = error as { code?: string };
+      if (dbError.code === '23505') { // unique violation
         console.log('✓ Membership already exists (duplicate webhook)');
         return;
       }
@@ -527,21 +577,23 @@ async function handleMembershipCreated(data: any) {
   throw lastError;
 }
 
-async function handleMembershipUpdated(data: any) {
+async function handleMembershipUpdated(data: OrganizationMembershipJSON) {
   console.log('👥 Updating membership:', data.id);
 
   const role = data.role === 'org:admin' ? 'SUPER_ADMIN' : 'STUDENT';
 
   // First try to update existing membership
-  const existingMembership = await prisma.organizationMembership.findUnique({
-    where: { clerkMembershipId: data.id },
-  });
+  const { data: existingMembership } = await supabaseAdmin
+    .from('organization_memberships')
+    .select('id')
+    .eq('clerk_membership_id', data.id)
+    .single();
 
   if (existingMembership) {
-    await prisma.organizationMembership.update({
-      where: { clerkMembershipId: data.id },
-      data: { role },
-    });
+    await supabaseAdmin
+      .from('organization_memberships')
+      .update({ role })
+      .eq('clerk_membership_id', data.id);
     console.log('✓ Membership updated with role:', role);
     return;
   }
@@ -550,13 +602,17 @@ async function handleMembershipUpdated(data: any) {
   // First ensure user and org exist
   console.log('⚠️ Membership not found, creating...');
 
-  const user = await prisma.user.findUnique({
-    where: { clerkUserId: data.public_user_data.user_id },
-  });
+  const { data: user } = await supabaseAdmin
+    .from('users')
+    .select('id')
+    .eq('clerk_user_id', data.public_user_data.user_id)
+    .single();
 
-  const org = await prisma.organization.findUnique({
-    where: { clerkOrganizationId: data.organization.id },
-  });
+  const { data: org } = await supabaseAdmin
+    .from('organizations')
+    .select('id')
+    .eq('clerk_organization_id', data.organization.id)
+    .single();
 
   if (!user || !org) {
     const missing = [];
@@ -568,34 +624,35 @@ async function handleMembershipUpdated(data: any) {
     );
   }
 
-  await prisma.organizationMembership.create({
-    data: {
-      organizationId: org.id,
-      userId: user.id,
+  await supabaseAdmin
+    .from('organization_memberships')
+    .insert({
+      organization_id: org.id,
+      user_id: user.id,
       role: role,
-      clerkMembershipId: data.id,
+      clerk_membership_id: data.id,
       status: 'ACTIVE',
-    },
-  });
+    });
 
   console.log('✓ Membership created with role:', role);
 }
 
-async function handleMembershipDeleted(data: any) {
+async function handleMembershipDeleted(data: OrganizationMembershipJSON) {
   console.log('👥 Soft-deleting membership:', data.id);
 
   // Soft delete: mark as REMOVED instead of hard delete
   // Preserves qualifications and availability for 30-day restoration window
-  const result = await prisma.organizationMembership.updateMany({
-    where: { clerkMembershipId: data.id },
-    data: {
+  const { data: result } = await supabaseAdmin
+    .from('organization_memberships')
+    .update({
       status: 'REMOVED',
-      removedAt: new Date(),
-      removedBy: 'clerk_webhook',
-    },
-  });
+      removed_at: new Date().toISOString(),
+      removed_by: 'clerk_webhook',
+    })
+    .eq('clerk_membership_id', data.id)
+    .select();
 
-  if (result.count > 0) {
+  if (result && result.length > 0) {
     console.log('✓ Membership soft-deleted (30-day grace period)');
   } else {
     console.log('✓ Membership already processed or not found');

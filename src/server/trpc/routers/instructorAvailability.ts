@@ -1,7 +1,24 @@
 import { router, protectedProcedure, instructorProcedure, adminProcedure } from '../init';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { MembershipRole } from '@prisma/client';
+import {
+  MembershipRole,
+  type OrganizationMembership,
+  type InstructorAvailability,
+  type UserBasicInfo,
+  type Insert,
+} from '@/types/database';
+
+/** Membership with user info for availability queries */
+type MembershipWithUser = OrganizationMembership & {
+  users: Pick<UserBasicInfo, 'first_name' | 'last_name' | 'email'> & { timezone: string | null };
+};
+
+/** Membership with user and availability for summaries */
+type MembershipWithAvailability = OrganizationMembership & {
+  users: Pick<UserBasicInfo, 'first_name' | 'last_name' | 'email'> & { timezone: string | null };
+  instructor_availability: InstructorAvailability[];
+};
 
 /**
  * Time block schema for availability
@@ -69,23 +86,20 @@ function validateTimeBlocks(blocks: Array<{ startTime: string; endTime: string }
 }
 
 /**
- * Convert HH:MM string to PostgreSQL TIME value
+ * Convert HH:MM string to PostgreSQL TIME string (HH:MM:SS)
  * PostgreSQL TIME stores as time of day without timezone
  */
-function timeStringToDate(timeString: string): Date {
-  const [hours, minutes] = timeString.split(':').map(Number);
-  // Use a fixed date (1970-01-01) since we only care about the time component
-  return new Date(1970, 0, 1, hours, minutes, 0, 0);
+function timeStringToPostgres(timeString: string): string {
+  return `${timeString}:00`;
 }
 
 /**
- * Convert PostgreSQL TIME (as Date) to HH:MM string
- * Use local time methods since timeStringToDate creates local dates
+ * Convert PostgreSQL TIME string (HH:MM:SS) to HH:MM string
+ * Supabase returns TIME columns as strings
  */
-function dateToTimeString(date: Date): string {
-  const hours = date.getHours().toString().padStart(2, '0');
-  const minutes = date.getMinutes().toString().padStart(2, '0');
-  return `${hours}:${minutes}`;
+function postgresTimeToString(timeString: string): string {
+  // TIME comes back as "HH:MM:SS" - just take first 5 chars
+  return timeString.substring(0, 5);
 }
 
 /**
@@ -126,22 +140,18 @@ export const instructorAvailabilityRouter = router({
       }
 
       // Verify instructor exists and is instructor-capable
-      const membership = await ctx.prisma.organizationMembership.findFirst({
-        where: {
-          id: targetInstructorId,
-          organizationId: ctx.organizationId,
-          status: 'ACTIVE',
-        },
-        include: {
-          user: {
-            select: {
-              timezone: true,
-            },
-          },
-        },
-      });
+      const { data: membership, error: membershipError } = await ctx.supabase
+        .from('organization_memberships')
+        .select(`
+          id, role,
+          users (timezone)
+        `)
+        .eq('id', targetInstructorId)
+        .eq('organization_id', ctx.organizationId)
+        .eq('status', 'ACTIVE')
+        .single();
 
-      if (!membership) {
+      if (membershipError || !membership) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Instructor not found in this organization',
@@ -150,7 +160,7 @@ export const instructorAvailabilityRouter = router({
 
       // Only instructor-capable roles have availability
       const instructorCapableRoles: MembershipRole[] = [MembershipRole.SUPER_ADMIN, MembershipRole.INSTRUCTOR];
-      if (!instructorCapableRoles.includes(membership.role)) {
+      if (!instructorCapableRoles.includes(membership.role as MembershipRole)) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: 'Only instructors can have availability schedules',
@@ -158,16 +168,20 @@ export const instructorAvailabilityRouter = router({
       }
 
       // Get availability records
-      const availability = await ctx.prisma.instructorAvailability.findMany({
-        where: {
-          instructorId: targetInstructorId,
-          organizationId: ctx.organizationId,
-        },
-        orderBy: [
-          { dayOfWeek: 'asc' },
-          { startTime: 'asc' },
-        ],
-      });
+      const { data: availability, error: availabilityError } = await ctx.supabase
+        .from('instructor_availability')
+        .select('*')
+        .eq('instructor_id', targetInstructorId)
+        .eq('organization_id', ctx.organizationId)
+        .order('dayOfWeek', { ascending: true })
+        .order('start_time', { ascending: true });
+
+      if (availabilityError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: availabilityError.message,
+        });
+      }
 
       // Transform to grouped by day format
       const byDay: Record<number, Array<{ startTime: string; endTime: string; id: string }>> = {};
@@ -175,17 +189,21 @@ export const instructorAvailabilityRouter = router({
         byDay[day] = [];
       }
 
-      for (const record of availability) {
+      for (const record of availability ?? []) {
         byDay[record.dayOfWeek].push({
           id: record.id,
-          startTime: dateToTimeString(record.startTime),
-          endTime: dateToTimeString(record.endTime),
+          startTime: postgresTimeToString(record.start_time),
+          endTime: postgresTimeToString(record.end_time),
         });
       }
 
+      // Type-safe access to joined user data
+      const typedMembership = membership as unknown as { users: { timezone: string | null } | null };
+      const timezone = typedMembership.users?.timezone ?? null;
+
       return {
         instructorId: targetInstructorId,
-        timezone: membership.user.timezone,
+        timezone,
         availability: byDay,
       };
     }),
@@ -220,15 +238,15 @@ export const instructorAvailabilityRouter = router({
       }
 
       // Verify target is an instructor in this org
-      const membership = await ctx.prisma.organizationMembership.findFirst({
-        where: {
-          id: targetInstructorId,
-          organizationId: ctx.organizationId,
-          status: 'ACTIVE',
-        },
-      });
+      const { data: membership, error: membershipError } = await ctx.supabase
+        .from('organization_memberships')
+        .select('id, role')
+        .eq('id', targetInstructorId)
+        .eq('organization_id', ctx.organizationId)
+        .eq('status', 'ACTIVE')
+        .single();
 
-      if (!membership) {
+      if (membershipError || !membership) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Instructor not found in this organization',
@@ -236,7 +254,7 @@ export const instructorAvailabilityRouter = router({
       }
 
       const instructorCapableRoles: MembershipRole[] = [MembershipRole.SUPER_ADMIN, MembershipRole.INSTRUCTOR];
-      if (!instructorCapableRoles.includes(membership.role)) {
+      if (!instructorCapableRoles.includes(membership.role as MembershipRole)) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: 'Only instructors can have availability schedules',
@@ -248,30 +266,42 @@ export const instructorAvailabilityRouter = router({
         validateTimeBlocks(input.blocks);
       }
 
-      // Replace all blocks for this day in a transaction
-      await ctx.prisma.$transaction(async (tx) => {
-        // Delete existing blocks for this day
-        await tx.instructorAvailability.deleteMany({
-          where: {
-            instructorId: targetInstructorId,
-            organizationId: ctx.organizationId,
-            dayOfWeek: input.dayOfWeek,
-          },
-        });
+      // Delete existing blocks for this day
+      const { error: deleteError } = await ctx.supabase
+        .from('instructor_availability')
+        .delete()
+        .eq('instructor_id', targetInstructorId)
+        .eq('organization_id', ctx.organizationId)
+        .eq('dayOfWeek', input.dayOfWeek);
 
-        // Create new blocks
-        if (input.blocks.length > 0) {
-          await tx.instructorAvailability.createMany({
-            data: input.blocks.map((block) => ({
-              instructorId: targetInstructorId,
-              organizationId: ctx.organizationId!,
-              dayOfWeek: input.dayOfWeek,
-              startTime: timeStringToDate(block.startTime),
-              endTime: timeStringToDate(block.endTime),
-            })),
+      if (deleteError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: deleteError.message,
+        });
+      }
+
+      // Create new blocks
+      if (input.blocks.length > 0) {
+        const blocks: Insert<'instructor_availability'>[] = input.blocks.map((block) => ({
+          instructor_id: targetInstructorId,
+          organization_id: ctx.organizationId!,
+          dayOfWeek: input.dayOfWeek,
+          start_time: timeStringToPostgres(block.startTime),
+          end_time: timeStringToPostgres(block.endTime),
+        }));
+
+        const { error: insertError } = await ctx.supabase
+          .from('instructor_availability')
+          .insert(blocks);
+
+        if (insertError) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: insertError.message,
           });
         }
-      });
+      }
 
       return { success: true };
     }),
@@ -307,15 +337,15 @@ export const instructorAvailabilityRouter = router({
       }
 
       // Verify target
-      const membership = await ctx.prisma.organizationMembership.findFirst({
-        where: {
-          id: targetInstructorId,
-          organizationId: ctx.organizationId,
-          status: 'ACTIVE',
-        },
-      });
+      const { data: membership, error: membershipError } = await ctx.supabase
+        .from('organization_memberships')
+        .select('id, role')
+        .eq('id', targetInstructorId)
+        .eq('organization_id', ctx.organizationId)
+        .eq('status', 'ACTIVE')
+        .single();
 
-      if (!membership) {
+      if (membershipError || !membership) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Instructor not found in this organization',
@@ -323,7 +353,7 @@ export const instructorAvailabilityRouter = router({
       }
 
       const instructorCapableRoles: MembershipRole[] = [MembershipRole.SUPER_ADMIN, MembershipRole.INSTRUCTOR];
-      if (!instructorCapableRoles.includes(membership.role)) {
+      if (!instructorCapableRoles.includes(membership.role as MembershipRole)) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: 'Only instructors can have availability schedules',
@@ -331,48 +361,60 @@ export const instructorAvailabilityRouter = router({
       }
 
       // Validate all days
-      for (const [dayStr, blocks] of Object.entries(input.schedule)) {
+      for (const [, blocks] of Object.entries(input.schedule)) {
         if (blocks.length > 0) {
           validateTimeBlocks(blocks);
         }
       }
 
-      // Replace entire schedule
-      await ctx.prisma.$transaction(async (tx) => {
-        // Delete all existing availability
-        await tx.instructorAvailability.deleteMany({
-          where: {
-            instructorId: targetInstructorId,
-            organizationId: ctx.organizationId,
-          },
+      // Delete all existing availability
+      const { error: deleteError } = await ctx.supabase
+        .from('instructor_availability')
+        .delete()
+        .eq('instructor_id', targetInstructorId)
+        .eq('organization_id', ctx.organizationId);
+
+      if (deleteError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: deleteError.message,
         });
+      }
 
-        // Create all new blocks
-        const allBlocks: Array<{
-          instructorId: string;
-          organizationId: string;
-          dayOfWeek: number;
-          startTime: Date;
-          endTime: Date;
-        }> = [];
+      // Create all new blocks
+      const allBlocks: Array<{
+        instructor_id: string;
+        organization_id: string;
+        dayOfWeek: number;
+        start_time: string;
+        end_time: string;
+      }> = [];
 
-        for (const [dayStr, blocks] of Object.entries(input.schedule)) {
-          const dayOfWeek = parseInt(dayStr, 10);
-          for (const block of blocks) {
-            allBlocks.push({
-              instructorId: targetInstructorId,
-              organizationId: ctx.organizationId!,
-              dayOfWeek,
-              startTime: timeStringToDate(block.startTime),
-              endTime: timeStringToDate(block.endTime),
-            });
-          }
+      for (const [dayStr, blocks] of Object.entries(input.schedule)) {
+        const dayOfWeek = parseInt(dayStr, 10);
+        for (const block of blocks) {
+          allBlocks.push({
+            instructor_id: targetInstructorId,
+            organization_id: ctx.organizationId!,
+            dayOfWeek: dayOfWeek,
+            start_time: timeStringToPostgres(block.startTime),
+            end_time: timeStringToPostgres(block.endTime),
+          });
         }
+      }
 
-        if (allBlocks.length > 0) {
-          await tx.instructorAvailability.createMany({ data: allBlocks });
+      if (allBlocks.length > 0) {
+        const { error: insertError } = await ctx.supabase
+          .from('instructor_availability')
+          .insert(allBlocks);
+
+        if (insertError) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: insertError.message,
+          });
         }
-      });
+      }
 
       return { success: true };
     }),
@@ -403,13 +445,19 @@ export const instructorAvailabilityRouter = router({
         targetInstructorId = input.instructorId ?? ctx.membershipId!;
       }
 
-      await ctx.prisma.instructorAvailability.deleteMany({
-        where: {
-          instructorId: targetInstructorId,
-          organizationId: ctx.organizationId,
-          dayOfWeek: input.dayOfWeek,
-        },
-      });
+      const { error } = await ctx.supabase
+        .from('instructor_availability')
+        .delete()
+        .eq('instructor_id', targetInstructorId)
+        .eq('organization_id', ctx.organizationId)
+        .eq('dayOfWeek', input.dayOfWeek);
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
 
       return { success: true };
     }),
@@ -451,52 +499,70 @@ export const instructorAvailabilityRouter = router({
       }
 
       // Get source day blocks
-      const sourceBlocks = await ctx.prisma.instructorAvailability.findMany({
-        where: {
-          instructorId: targetInstructorId,
-          organizationId: ctx.organizationId,
-          dayOfWeek: input.sourceDay,
-        },
-      });
+      const { data: sourceBlocks, error: sourceError } = await ctx.supabase
+        .from('instructor_availability')
+        .select('*')
+        .eq('instructor_id', targetInstructorId)
+        .eq('organization_id', ctx.organizationId)
+        .eq('dayOfWeek', input.sourceDay);
 
-      // Copy to target days
-      await ctx.prisma.$transaction(async (tx) => {
-        // Delete existing on target days
-        await tx.instructorAvailability.deleteMany({
-          where: {
-            instructorId: targetInstructorId,
-            organizationId: ctx.organizationId,
-            dayOfWeek: { in: input.targetDays },
-          },
+      if (sourceError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: sourceError.message,
         });
+      }
 
-        // Create copies for each target day
-        const newBlocks: Array<{
-          instructorId: string;
-          organizationId: string;
-          dayOfWeek: number;
-          startTime: Date;
-          endTime: Date;
-        }> = [];
+      // Delete existing on target days
+      const { error: deleteError } = await ctx.supabase
+        .from('instructor_availability')
+        .delete()
+        .eq('instructor_id', targetInstructorId)
+        .eq('organization_id', ctx.organizationId)
+        .in('dayOfWeek', input.targetDays);
 
-        for (const targetDay of input.targetDays) {
-          for (const block of sourceBlocks) {
-            newBlocks.push({
-              instructorId: targetInstructorId,
-              organizationId: ctx.organizationId!,
-              dayOfWeek: targetDay,
-              startTime: block.startTime,
-              endTime: block.endTime,
-            });
-          }
+      if (deleteError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: deleteError.message,
+        });
+      }
+
+      // Create copies for each target day
+      const newBlocks: Array<{
+        instructor_id: string;
+        organization_id: string;
+        dayOfWeek: number;
+        start_time: string;
+        end_time: string;
+      }> = [];
+
+      for (const targetDay of input.targetDays) {
+        for (const block of sourceBlocks ?? []) {
+          newBlocks.push({
+            instructor_id: targetInstructorId,
+            organization_id: ctx.organizationId!,
+            dayOfWeek: targetDay,
+            start_time: block.start_time,
+            end_time: block.end_time,
+          });
         }
+      }
 
-        if (newBlocks.length > 0) {
-          await tx.instructorAvailability.createMany({ data: newBlocks });
+      if (newBlocks.length > 0) {
+        const { error: insertError } = await ctx.supabase
+          .from('instructor_availability')
+          .insert(newBlocks);
+
+        if (insertError) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: insertError.message,
+          });
         }
-      });
+      }
 
-      return { success: true, copiedBlocks: sourceBlocks.length * input.targetDays.length };
+      return { success: true, copiedBlocks: (sourceBlocks?.length ?? 0) * input.targetDays.length };
     }),
 
   /**
@@ -505,39 +571,55 @@ export const instructorAvailabilityRouter = router({
    */
   listInstructorSummaries: adminProcedure
     .query(async ({ ctx }) => {
-      const instructors = await ctx.prisma.organizationMembership.findMany({
-        where: {
-          organizationId: ctx.organizationId,
-          status: 'ACTIVE',
-          role: { in: [MembershipRole.SUPER_ADMIN, MembershipRole.INSTRUCTOR] },
-        },
-        include: {
-          user: {
-            select: {
-              firstName: true,
-              lastName: true,
-              email: true,
-              timezone: true,
-            },
-          },
-          availability: {
-            select: {
-              dayOfWeek: true,
-            },
-          },
-        },
-      });
+      const { data: instructors, error } = await ctx.supabase
+        .from('organization_memberships')
+        .select(`
+          id, role,
+          users (
+            first_name, last_name, email, timezone
+          ),
+          instructor_availability (
+            dayOfWeek
+          )
+        `)
+        .eq('organization_id', ctx.organizationId)
+        .eq('status', 'ACTIVE')
+        .in('role', [MembershipRole.SUPER_ADMIN, MembershipRole.INSTRUCTOR]);
 
-      return instructors.map((instructor) => {
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      // Type-safe access to joined data
+      type InstructorWithJoins = {
+        id: string;
+        role: string;
+        users: { first_name: string | null; last_name: string | null; email: string; timezone: string | null } | null;
+        instructor_availability: { dayOfWeek: number }[];
+      };
+      const typedInstructors = instructors as unknown as InstructorWithJoins[];
+
+      return typedInstructors.map((instructor) => {
+        const user = instructor.users;
+        const availability = instructor.instructor_availability ?? [];
+
         // Count unique days with availability
         const daysWithAvailability = new Set(
-          instructor.availability.map((a) => a.dayOfWeek)
+          availability.map((a) => a.dayOfWeek)
         ).size;
 
         return {
           id: instructor.id,
           role: instructor.role,
-          user: instructor.user,
+          user: {
+            firstName: user?.first_name,
+            lastName: user?.last_name,
+            email: user?.email,
+            timezone: user?.timezone,
+          },
           daysWithAvailability,
           hasAvailability: daysWithAvailability > 0,
         };

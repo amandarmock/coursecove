@@ -10,7 +10,7 @@ import { toast } from '@/components/ui/use-toast';
 import { Globe, AlertCircle } from 'lucide-react';
 import { trpc } from '@/lib/trpc/client';
 import { TimezoneSelect, WeeklyAvailabilityEditor } from '@/components/availability';
-import { MembershipRole } from '@prisma/client';
+import { MembershipRole } from '@/types/database';
 
 export default function AccountAvailabilityPage() {
   const [timezone, setTimezone] = useState<string>('');

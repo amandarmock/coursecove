@@ -1,7 +1,7 @@
 import { initTRPC, TRPCError } from '@trpc/server';
 import { Context } from './context';
 import SuperJSON from 'superjson';
-import { MembershipRole } from '@prisma/client';
+import { MembershipRole } from '@/types/database';
 import {
   checkRateLimit,
   createRateLimitKey,
@@ -41,7 +41,7 @@ const isAuthed = t.middleware(({ ctx, next }) => {
 
   return next({
     ctx: {
-      prisma: ctx.prisma,
+      supabase: ctx.supabase,
       userId: ctx.userId,
       organizationId: ctx.organizationId,
       membershipId: ctx.membershipId,
@@ -100,7 +100,7 @@ const isUserAuthed = t.middleware(({ ctx, next }) => {
 
   return next({
     ctx: {
-      prisma: ctx.prisma,
+      supabase: ctx.supabase,
       userId: ctx.userId,
       // These may be null if user has no org membership
       organizationId: ctx.organizationId,
