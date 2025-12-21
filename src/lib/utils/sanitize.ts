@@ -1,4 +1,4 @@
-import DOMPurify from 'isomorphic-dompurify';
+import sanitizeHtml from 'sanitize-html';
 import { TRPCError } from '@trpc/server';
 import {
   APPOINTMENT_TYPE_NAME_MAX_LENGTH,
@@ -12,7 +12,7 @@ import {
 
 /**
  * Sanitization utilities for Appointment Management
- * Uses isomorphic-dompurify for XSS protection
+ * Uses sanitize-html for XSS protection (lightweight, no jsdom dependency)
  */
 
 /**
@@ -30,10 +30,9 @@ export function sanitizeText(
   if (!input) return '';
 
   // Strip all HTML tags, keep only text content
-  const sanitized = DOMPurify.sanitize(input, {
-    ALLOWED_TAGS: [],
-    ALLOWED_ATTR: [],
-    KEEP_CONTENT: true,
+  const sanitized = sanitizeHtml(input, {
+    allowedTags: [],
+    allowedAttributes: {},
   });
 
   // Trim whitespace and enforce max length
@@ -83,9 +82,9 @@ export function sanitizeRichText(
   if (!input) return '';
 
   // Allow only basic formatting tags
-  const sanitized = DOMPurify.sanitize(input, {
-    ALLOWED_TAGS: ['b', 'i', 'em', 'strong', 'p', 'br', 'ul', 'ol', 'li'],
-    ALLOWED_ATTR: [],
+  const sanitized = sanitizeHtml(input, {
+    allowedTags: ['b', 'i', 'em', 'strong', 'p', 'br', 'ul', 'ol', 'li'],
+    allowedAttributes: {},
   });
 
   // Trim whitespace and enforce max length
