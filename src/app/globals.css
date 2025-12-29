@@ -1,0 +1,52 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-brand-50: #f0fdfc;
+  --color-brand-100: #ccfbf6;
+  --color-brand-200: #99f6ed;
+  --color-brand-300: #5eeadb;
+  --color-brand-400: #3cafab;
+  --color-brand-500: #1f9d94;
+  --color-brand-600: #167d78;
+  --color-brand-700: #166462;
+  --color-brand-800: #174f4e;
+  --color-brand-900: #184241;
+
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-heading: var(--font-plus-jakarta), system-ui, sans-serif;
+}
+
+:root {
+  --foreground: #171717;
+  --background: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --foreground: #ededed;
+    --background: #0a0a0a;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-sans);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+}
+
+@layer base {
+  * {
+    @apply border-neutral-200;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    * {
+      @apply border-neutral-800;
+    }
+  }
+}
