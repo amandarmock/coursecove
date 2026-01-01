@@ -21,8 +21,8 @@ import { POLICY_VERSIONS } from "@/lib/policy-versions"
 // =============================================================================
 
 const consentSchema = z.object({
-  termsVersion: z.string(),
-  privacyVersion: z.string(),
+  termsVersion: z.string().min(1, "Terms version is required"),
+  privacyVersion: z.string().min(1, "Privacy version is required"),
   method: z.enum([
     "checkbox",
     "click",
@@ -30,14 +30,19 @@ const consentSchema = z.object({
     "email_verification",
     "implicit",
   ]),
-  acceptedAt: z.string(),
+  acceptedAt: z.string().datetime({ message: "Invalid consent timestamp" }),
   userAgent: z.string().optional(),
 })
 
 const completeOnboardingSchema = z.object({
   clerkOrgId: z.string().min(1),
-  name: z.string().min(1).max(100).trim(),
-  slug: z.string().min(3).max(50),
+  name: z.string().min(1, "Business name is required").max(100).trim(),
+  slug: z
+    .string()
+    .min(3, "URL must be at least 3 characters")
+    .max(50)
+    .trim()
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Use only lowercase letters, numbers, and hyphens"),
   servesMinors: z.boolean(),
   consent: consentSchema,
 })
@@ -94,12 +99,21 @@ export const onboardingRouter = router({
   complete: protectedProcedure
     .input(completeOnboardingSchema)
     .mutation(async ({ ctx, input }) => {
-      const client = await clerkClient()
-
       // LAYER 2: Verify org membership via Backend API (SECURITY)
-      const memberships = await client.users.getOrganizationMembershipList({
-        userId: ctx.userId,
-      })
+      let memberships
+      let clerkUser
+      try {
+        const client = await clerkClient()
+        memberships = await client.users.getOrganizationMembershipList({
+          userId: ctx.userId,
+        })
+      } catch (error) {
+        console.error("Failed to fetch org memberships from Clerk:", error)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Unable to verify organization membership. Please try again.",
+        })
+      }
 
       const isMember = memberships.data.some(
         (membership) => membership.organization.id === input.clerkOrgId
@@ -113,7 +127,17 @@ export const onboardingRouter = router({
       }
 
       // LAYER 3: Get fresh user data from Clerk (source of truth)
-      const clerkUser = await client.users.getUser(ctx.userId)
+      try {
+        const client = await clerkClient()
+        clerkUser = await client.users.getUser(ctx.userId)
+      } catch (error) {
+        console.error("Failed to fetch user from Clerk:", error)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Unable to fetch user data. Please try again.",
+        })
+      }
+
       const primaryEmail = clerkUser.emailAddresses?.[0]?.emailAddress
 
       if (!primaryEmail) {
@@ -237,11 +261,22 @@ export const onboardingRouter = router({
       }
 
       // LAYER 7: Update Clerk user metadata to mark onboarding complete
-      await client.users.updateUserMetadata(ctx.userId, {
-        publicMetadata: {
-          onboardingComplete: true,
-        },
-      })
+      // This is critical - if it fails, user data is saved but they'll be stuck in onboarding.
+      // However, the upserts above are idempotent, so retrying is safe.
+      try {
+        const client = await clerkClient()
+        await client.users.updateUserMetadata(ctx.userId, {
+          publicMetadata: {
+            onboardingComplete: true,
+          },
+        })
+      } catch (error) {
+        console.error("Failed to update Clerk metadata:", error)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to complete onboarding. Please try again.",
+        })
+      }
 
       return { success: true }
     }),
