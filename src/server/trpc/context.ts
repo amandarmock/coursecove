@@ -11,9 +11,8 @@
  */
 
 import { auth } from "@clerk/nextjs/server"
-import type { FetchCreateContextFnOptions } from "@trpc/server/adapters/fetch"
 
-export async function createContext(_opts: FetchCreateContextFnOptions) {
+export async function createContext() {
   const { userId, orgId, orgRole } = await auth()
 
   return {

@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react"
 import { useUser, useClerk } from "@clerk/nextjs"
 import { Settings, LogOut, ChevronDown } from "lucide-react"
+import Image from "next/image"
 
 export function UserMenu() {
   const { user } = useUser()
@@ -58,10 +59,13 @@ export function UserMenu() {
       >
         <div className="relative">
           {imageUrl ? (
-            <img
+            <Image
               src={imageUrl}
               alt={user.fullName || "User"}
+              width={32}
+              height={32}
               className="h-8 w-8 rounded-full object-cover"
+              unoptimized
             />
           ) : (
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-amber-600 to-amber-800 text-sm font-medium text-white">

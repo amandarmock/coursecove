@@ -22,9 +22,6 @@ export default clerkMiddleware(async (auth, request) => {
   const pathname = request.nextUrl.pathname
   const isPublic = isPublicRoute(request)
 
-  // DEBUG: Log all requests through proxy
-  console.log(`[PROXY] ${request.method} ${pathname} | isPublic: ${isPublic}`)
-
   if (!isPublic) {
     await auth.protect()
 
@@ -36,7 +33,6 @@ export default clerkMiddleware(async (auth, request) => {
       const { sessionClaims } = await auth()
       const onboardingComplete = sessionClaims?.metadata?.onboardingComplete
       if (!onboardingComplete && !pathname.startsWith("/onboarding")) {
-        console.log(`[PROXY] Redirecting to /onboarding (not complete)`)
         return NextResponse.redirect(new URL("/onboarding", request.url))
       }
     }

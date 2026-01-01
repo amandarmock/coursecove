@@ -244,7 +244,7 @@ describe('ORG-001: Business Onboarding', () => {
         process.env.CLERK_WEBHOOK_SECRET = ''
 
         setupValidHeaders()
-        const request = createMockRequest({})
+        createMockRequest({})
 
         // The actual route checks for the secret
         // We simulate this by checking the mock would fail

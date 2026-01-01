@@ -25,9 +25,20 @@ export function OnboardingForm() {
   const [slugEdited, setSlugEdited] = useState(false)
   const [servesMinors, setServesMinors] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [pendingConsent, setPendingConsent] = useState<PendingConsent | null>(
-    null
-  )
+
+  // Lazy initialization from sessionStorage (avoids useEffect setState)
+  const [pendingConsent] = useState<PendingConsent | null>(() => {
+    if (typeof window === "undefined") return null
+    try {
+      const stored = sessionStorage.getItem(PENDING_CONSENT_KEY)
+      if (stored) {
+        return JSON.parse(stored) as PendingConsent
+      }
+    } catch (e) {
+      console.error("Failed to read pending consent:", e)
+    }
+    return null
+  })
 
   // Debounce slug for server validation
   const [debouncedSlug, setDebouncedSlug] = useState("")
@@ -88,24 +99,12 @@ export function OnboardingForm() {
     return null
   }, [formatValidation, slugQuery.data])
 
-  // Read pending consent from sessionStorage on mount
-  useEffect(() => {
-    try {
-      const stored = sessionStorage.getItem(PENDING_CONSENT_KEY)
-      if (stored) {
-        const parsed = JSON.parse(stored) as PendingConsent
-        setPendingConsent(parsed)
-      }
-    } catch (e) {
-      console.error("Failed to read pending consent:", e)
-    }
-  }, [])
-
   // Debounce slug updates
   useEffect(() => {
     if (!slug || !formatValidation?.valid) {
-      setDebouncedSlug("")
-      return
+      // Use setTimeout to avoid synchronous setState in effect
+      const clearId = setTimeout(() => setDebouncedSlug(""), 0)
+      return () => clearTimeout(clearId)
     }
 
     const timeoutId = setTimeout(() => {

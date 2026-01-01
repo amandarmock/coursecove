@@ -8,10 +8,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 // Mock Supabase client before importing functions
 const mockSupabaseFrom = vi.fn()
-const mockSupabaseSelect = vi.fn()
 const mockSupabaseUpsert = vi.fn()
-const mockSupabaseEq = vi.fn()
-const mockSupabaseSingle = vi.fn()
 
 vi.mock('@supabase/supabase-js', () => ({
   createClient: vi.fn(() => ({
@@ -23,44 +20,6 @@ describe('ORG-001: Business Onboarding', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
-
-  // Helper to set up successful user lookup
-  function mockUserLookup(userId: string) {
-    mockSupabaseFrom.mockImplementation((table: string) => {
-      if (table === 'users') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              single: vi.fn(() => Promise.resolve({
-                data: { id: userId },
-                error: null,
-              })),
-            })),
-          })),
-        }
-      }
-      return { select: mockSupabaseSelect, upsert: mockSupabaseUpsert }
-    })
-  }
-
-  // Helper to set up successful org lookup
-  function mockOrgLookup(orgId: string) {
-    mockSupabaseFrom.mockImplementation((table: string) => {
-      if (table === 'organizations') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              single: vi.fn(() => Promise.resolve({
-                data: { id: orgId },
-                error: null,
-              })),
-            })),
-          })),
-        }
-      }
-      return { select: mockSupabaseSelect, upsert: mockSupabaseUpsert }
-    })
-  }
 
   describe('AC-4: Owner Role Assignment', () => {
     describe('Role Mapping', () => {
@@ -117,9 +76,7 @@ describe('ORG-001: Business Onboarding', () => {
         }
 
         // Set up sequential lookups
-        let callCount = 0
         mockSupabaseFrom.mockImplementation((table: string) => {
-          callCount++
           if (table === 'users') {
             return {
               select: vi.fn(() => ({
