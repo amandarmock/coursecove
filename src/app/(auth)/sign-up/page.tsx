@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { useSignUp, useSignIn } from "@clerk/nextjs"
+import { useSignUp } from "@clerk/nextjs"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { Logo } from "@/components/logo"
@@ -9,7 +9,6 @@ import { PENDING_CONSENT_KEY, POLICY_VERSIONS } from "@/lib/policy-versions"
 
 export default function SignUpPage() {
   const { isLoaded, signUp } = useSignUp()
-  const { signIn } = useSignIn()
   const router = useRouter()
 
   const [firstName, setFirstName] = useState("")
@@ -64,7 +63,7 @@ export default function SignUpPage() {
   }
 
   const handleGoogleSignUp = async () => {
-    if (!isLoaded || !signIn) return
+    if (!isLoaded || !signUp) return
 
     if (!termsAccepted) {
       setError("You must accept the Terms of Service and Privacy Policy")
@@ -85,7 +84,7 @@ export default function SignUpPage() {
         })
       )
 
-      await signIn.authenticateWithRedirect({
+      await signUp.authenticateWithRedirect({
         strategy: "oauth_google",
         redirectUrl: "/sso-callback",
         redirectUrlComplete: "/onboarding",

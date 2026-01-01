@@ -25,10 +25,11 @@ export default function SSOCallbackPage() {
         Use fallback redirects instead of force redirects.
         Force redirects bypass CAPTCHA verification.
         The redirectUrlComplete from authenticateWithRedirect() handles the final destination.
+
+        Note: afterSignInUrl/afterSignUpUrl are deprecated in favor of
+        signInFallbackRedirectUrl/signUpFallbackRedirectUrl.
       */}
       <AuthenticateWithRedirectCallback
-        afterSignInUrl="/dashboard"
-        afterSignUpUrl="/onboarding"
         signInFallbackRedirectUrl="/dashboard"
         signUpFallbackRedirectUrl="/onboarding"
         continueSignUpUrl="/sso-callback"

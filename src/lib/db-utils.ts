@@ -7,7 +7,7 @@ import { createServerSupabaseClient } from "./supabase/server"
  * @param clerkUserId - Clerk user ID (e.g., "user_xxx")
  * @returns Supabase UUID or null
  */
-export async function getSupabaseUserId(
+async function getSupabaseUserId(
   clerkUserId: string
 ): Promise<string | null> {
   const supabase = createServerSupabaseClient()
@@ -32,7 +32,7 @@ export async function getSupabaseUserId(
  * @param clerkOrgId - Clerk organization ID (e.g., "org_xxx")
  * @returns Supabase UUID or null
  */
-export async function getSupabaseOrgId(
+async function getSupabaseOrgId(
   clerkOrgId: string
 ): Promise<string | null> {
   const supabase = createServerSupabaseClient()
@@ -53,6 +53,11 @@ export async function getSupabaseOrgId(
 /**
  * Wait for a user to exist in Supabase (for webhook race conditions).
  * Retries up to maxAttempts times with exponential backoff.
+ *
+ * @deprecated TD-2: Use completeOnboarding() which syncs via Clerk Backend API.
+ * This function polls for Inngest webhook processing which has race conditions.
+ * Kept for potential future use cases where polling is appropriate.
+ * @see docs/features/ORG/ORG-001-business-onboarding.md (TD-2 section)
  *
  * @param clerkUserId - Clerk user ID
  * @param maxAttempts - Maximum retry attempts (default: 5)
@@ -77,6 +82,11 @@ export async function waitForSupabaseUser(
 /**
  * Wait for an organization to exist in Supabase (for webhook race conditions).
  * Retries up to maxAttempts times with exponential backoff.
+ *
+ * @deprecated TD-2: Use completeOnboarding() which syncs via Clerk Backend API.
+ * This function polls for Inngest webhook processing which has race conditions.
+ * Kept for potential future use cases where polling is appropriate.
+ * @see docs/features/ORG/ORG-001-business-onboarding.md (TD-2 section)
  *
  * @param clerkOrgId - Clerk organization ID
  * @param maxAttempts - Maximum retry attempts (default: 5)

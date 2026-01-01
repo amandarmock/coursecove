@@ -10,7 +10,7 @@
  * These are blocked to prevent confusion with system routes,
  * support channels, and common infrastructure paths.
  */
-export const RESERVED_SLUGS = new Set([
+const RESERVED_SLUGS = new Set([
   // System routes
   "admin",
   "api",

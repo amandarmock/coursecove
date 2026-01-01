@@ -4,6 +4,8 @@ import { WebhookEvent } from "@clerk/nextjs/server"
 import { inngest } from "@/server/inngest"
 
 export async function POST(req: Request) {
+  console.log(`[WEBHOOK] POST /api/webhooks/clerk - Request received`)
+
   const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET
 
   if (!WEBHOOK_SECRET) {

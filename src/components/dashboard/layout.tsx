@@ -1,8 +1,6 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { useUser } from "@clerk/nextjs"
-import { useRouter } from "next/navigation"
 import { Topbar } from "./topbar"
 import { Sidebar } from "./sidebar"
 
@@ -10,15 +8,26 @@ interface DashboardLayoutProps {
   children: React.ReactNode
 }
 
+/**
+ * Dashboard Layout (Client Component)
+ *
+ * Handles UI concerns only:
+ * - Sidebar collapse state (persisted to localStorage)
+ * - Layout structure (Topbar, Sidebar, main content)
+ *
+ * Auth is handled by the parent Server Component via DAL.
+ * This component assumes the user is already authenticated.
+ *
+ * @see docs/architecture/adrs/004-authentication-enforcement.md
+ */
 export function DashboardLayout({ children }: DashboardLayoutProps) {
-  const { isLoaded, isSignedIn, user } = useUser()
-  const router = useRouter()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
-  // Load sidebar state from localStorage
+  // Load sidebar state from localStorage (client-side hydration)
   useEffect(() => {
     const saved = localStorage.getItem("sidebar-collapsed")
     if (saved !== null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Hydrating from localStorage on mount
       setSidebarCollapsed(saved === "true")
     }
   }, [])
@@ -28,28 +37,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     const newState = !sidebarCollapsed
     setSidebarCollapsed(newState)
     localStorage.setItem("sidebar-collapsed", String(newState))
-  }
-
-  // Auth redirects
-  useEffect(() => {
-    if (isLoaded && !isSignedIn) {
-      router.push("/sign-in")
-    }
-    if (isLoaded && isSignedIn && !user?.publicMetadata?.onboardingComplete) {
-      router.push("/onboarding")
-    }
-  }, [isLoaded, isSignedIn, user, router])
-
-  if (!isLoaded) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-neutral-950">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-neutral-700 border-t-brand-500" />
-      </div>
-    )
-  }
-
-  if (!isSignedIn) {
-    return null
   }
 
   return (

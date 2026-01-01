@@ -1,6 +1,7 @@
 import type { Metadata } from "next"
 import { ClerkProvider } from "@clerk/nextjs"
 import { Inter, Plus_Jakarta_Sans } from "next/font/google"
+import { TRPCProvider } from "@/lib/trpc/provider"
 import "./globals.css"
 
 const inter = Inter({
@@ -38,7 +39,7 @@ export default function RootLayout({
           className={`${inter.variable} ${plusJakarta.variable} antialiased`}
           suppressHydrationWarning
         >
-          {children}
+          <TRPCProvider>{children}</TRPCProvider>
         </body>
       </html>
     </ClerkProvider>

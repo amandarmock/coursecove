@@ -1,39 +1,92 @@
 "use client"
 
-import { useState, useTransition, useEffect, useCallback } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { useOrganizationList, useUser } from "@clerk/nextjs"
-import { completeOnboarding, checkSlugAvailability } from "./actions"
+import { trpc } from "@/lib/trpc/client"
 import {
   PENDING_CONSENT_KEY,
   POLICY_VERSIONS,
   type PendingConsent,
 } from "@/lib/policy-versions"
-import {
-  slugify,
-  validateSlugFormat,
-  SLUG_CONSTRAINTS,
-  type SlugValidationResult,
-} from "@/lib/slug-utils"
-
-type SlugStatus = "idle" | "checking" | "available" | "unavailable" | "invalid"
+import { slugify, validateSlugFormat, SLUG_CONSTRAINTS } from "@/lib/slug-utils"
 
 export function OnboardingForm() {
   const router = useRouter()
-  const { user } = useUser()
-  const { createOrganization: clerkCreateOrg, setActive } = useOrganizationList()
-  const [isPending, startTransition] = useTransition()
+  const { user, isLoaded: isUserLoaded } = useUser()
+  const {
+    createOrganization: clerkCreateOrg,
+    setActive,
+    isLoaded: isOrgListLoaded,
+  } = useOrganizationList()
 
   const [businessName, setBusinessName] = useState("")
   const [slug, setSlug] = useState("")
   const [slugEdited, setSlugEdited] = useState(false)
   const [servesMinors, setServesMinors] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [pendingConsent, setPendingConsent] = useState<PendingConsent | null>(null)
+  const [pendingConsent, setPendingConsent] = useState<PendingConsent | null>(
+    null
+  )
 
-  // Slug validation state
-  const [slugStatus, setSlugStatus] = useState<SlugStatus>("idle")
-  const [slugMessage, setSlugMessage] = useState<string | null>(null)
+  // Debounce slug for server validation
+  const [debouncedSlug, setDebouncedSlug] = useState("")
+
+  // Client-side format validation (instant feedback)
+  const formatValidation = useMemo(() => {
+    if (!slug) return null
+    return validateSlugFormat(slug)
+  }, [slug])
+
+  // tRPC query for slug availability (server-side check)
+  const slugQuery = trpc.onboarding.checkSlug.useQuery(
+    { slug: debouncedSlug },
+    {
+      // Only run query if:
+      // 1. We have a debounced slug
+      // 2. Format validation passed
+      enabled: Boolean(debouncedSlug && formatValidation?.valid),
+      // Don't refetch on window focus for this
+      refetchOnWindowFocus: false,
+      // Keep previous data while fetching new
+      placeholderData: (prev) => prev,
+    }
+  )
+
+  // tRPC mutation for completing onboarding
+  const completeMutation = trpc.onboarding.complete.useMutation({
+    onSuccess: async () => {
+      // Clear pending consent from sessionStorage
+      try {
+        sessionStorage.removeItem(PENDING_CONSENT_KEY)
+      } catch (e) {
+        console.error("Failed to clear pending consent:", e)
+      }
+
+      await user?.reload()
+      router.push("/dashboard")
+    },
+    onError: (err) => {
+      setError(err.message)
+    },
+  })
+
+  // Derive slug status from format validation and query state
+  const slugStatus = useMemo(() => {
+    if (!slug) return "idle" as const
+    if (!formatValidation?.valid) return "invalid" as const
+    if (debouncedSlug !== slug) return "checking" as const
+    if (slugQuery.isLoading) return "checking" as const
+    if (slugQuery.data?.available) return "available" as const
+    return "unavailable" as const
+  }, [slug, formatValidation, debouncedSlug, slugQuery.isLoading, slugQuery.data])
+
+  const slugMessage = useMemo(() => {
+    if (!formatValidation?.valid) return formatValidation?.message ?? null
+    if (slugQuery.data && !slugQuery.data.available)
+      return slugQuery.data.message
+    return null
+  }, [formatValidation, slugQuery.data])
 
   // Read pending consent from sessionStorage on mount
   useEffect(() => {
@@ -48,46 +101,28 @@ export function OnboardingForm() {
     }
   }, [])
 
-  // Debounced slug validation
+  // Debounce slug updates
   useEffect(() => {
-    // Don't validate empty slugs
-    if (!slug) {
-      setSlugStatus("idle")
-      setSlugMessage(null)
+    if (!slug || !formatValidation?.valid) {
+      setDebouncedSlug("")
       return
     }
 
-    // Immediate format validation (no server call)
-    const formatResult = validateSlugFormat(slug)
-    if (!formatResult.valid) {
-      setSlugStatus("invalid")
-      setSlugMessage(formatResult.message)
-      return
-    }
-
-    // Debounce server validation
-    setSlugStatus("checking")
-    setSlugMessage(null)
-
-    const timeoutId = setTimeout(async () => {
-      try {
-        const result = await checkSlugAvailability(slug)
-        if (result.available) {
-          setSlugStatus("available")
-          setSlugMessage(null)
-        } else {
-          setSlugStatus("unavailable")
-          setSlugMessage(result.message)
-        }
-      } catch (e) {
-        console.error("Failed to check slug availability:", e)
-        setSlugStatus("unavailable")
-        setSlugMessage("Unable to verify availability")
-      }
+    const timeoutId = setTimeout(() => {
+      setDebouncedSlug(slug)
     }, 300)
 
     return () => clearTimeout(timeoutId)
-  }, [slug])
+  }, [slug, formatValidation?.valid])
+
+  // Wait for Clerk to fully hydrate before rendering form
+  if (!isUserLoaded || !isOrgListLoaded) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-neutral-300 border-t-brand-600" />
+      </div>
+    )
+  }
 
   const handleBusinessNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const name = e.target.value
@@ -126,53 +161,38 @@ export function OnboardingForm() {
       return
     }
 
-    startTransition(async () => {
-      try {
-        // Create Clerk organization
-        const org = await clerkCreateOrg({
-          name: businessName,
-          slug: slug,
-        })
+    try {
+      // Create Clerk organization
+      const org = await clerkCreateOrg({
+        name: businessName,
+        slug: slug,
+      })
 
-        await setActive?.({ organization: org.id })
+      await setActive?.({ organization: org.id })
 
-        // Build consent data for server action
-        const consentData = pendingConsent || {
-          termsVersion: POLICY_VERSIONS.terms,
-          privacyVersion: POLICY_VERSIONS.privacy,
-          method: "checkbox" as const,
-          acceptedAt: new Date().toISOString(),
-        }
-
-        // Complete onboarding with consent persistence
-        const result = await completeOnboarding({
-          clerkOrgId: org.id,
-          name: businessName,
-          slug: slug,
-          servesMinors,
-          consent: consentData,
-        })
-
-        if (!result.success) {
-          setError(result.error || "Failed to complete setup")
-          return
-        }
-
-        // Clear pending consent from sessionStorage
-        try {
-          sessionStorage.removeItem(PENDING_CONSENT_KEY)
-        } catch (e) {
-          console.error("Failed to clear pending consent:", e)
-        }
-
-        await user?.reload()
-        router.push("/dashboard")
-      } catch (err) {
-        console.error("Onboarding error:", err)
-        setError(err instanceof Error ? err.message : "Something went wrong")
+      // Build consent data
+      const consentData = pendingConsent || {
+        termsVersion: POLICY_VERSIONS.terms,
+        privacyVersion: POLICY_VERSIONS.privacy,
+        method: "checkbox" as const,
+        acceptedAt: new Date().toISOString(),
       }
-    })
+
+      // Complete onboarding via tRPC mutation
+      completeMutation.mutate({
+        clerkOrgId: org.id,
+        name: businessName,
+        slug: slug,
+        servesMinors,
+        consent: consentData,
+      })
+    } catch (err) {
+      console.error("Onboarding error:", err)
+      setError(err instanceof Error ? err.message : "Something went wrong")
+    }
   }
+
+  const isPending = completeMutation.isPending
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -232,13 +252,33 @@ export function OnboardingForm() {
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-300 border-t-brand-600" />
             )}
             {slugStatus === "available" && (
-              <svg className="h-4 w-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              <svg
+                className="h-4 w-4 text-green-500"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M5 13l4 4L19 7"
+                />
               </svg>
             )}
             {(slugStatus === "unavailable" || slugStatus === "invalid") && (
-              <svg className="h-4 w-4 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              <svg
+                className="h-4 w-4 text-red-500"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M6 18L18 6M6 6l12 12"
+                />
               </svg>
             )}
             .coursecove.com
@@ -277,9 +317,10 @@ export function OnboardingForm() {
               My business serves children or teenagers (under 18)
             </span>
             <span className="mt-1 block text-sm text-neutral-600 dark:text-neutral-400">
-              If you have minor students or clients, we&apos;ll enable family accounts so
-              parents can manage their children&apos;s profiles. This ensures compliance
-              with children&apos;s privacy laws and protects your business.
+              If you have minor students or clients, we&apos;ll enable family
+              accounts so parents can manage their children&apos;s profiles.
+              This ensures compliance with children&apos;s privacy laws and
+              protects your business.
             </span>
           </label>
         </div>

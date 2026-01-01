@@ -1,35 +1,25 @@
-"use client"
-
-import { useUser } from "@clerk/nextjs"
-import { useRouter } from "next/navigation"
-import { useEffect } from "react"
+import { redirect } from "next/navigation"
+import { verifySession, isOnboardingComplete } from "@/lib/dal"
 import { OnboardingForm } from "./onboarding-form"
 import Link from "next/link"
 import { Logo } from "@/components/logo"
 
-export default function OnboardingPage() {
-  const { isLoaded, isSignedIn, user } = useUser()
-  const router = useRouter()
+/**
+ * Onboarding Page (Server Component)
+ *
+ * Security: Uses DAL's verifySession() for authentication verification.
+ * Redirects to dashboard if onboarding already complete.
+ *
+ * @see docs/architecture/adrs/004-authentication-enforcement.md
+ */
+export default async function OnboardingPage() {
+  // Layer 2: Server-side auth verification (security boundary)
+  await verifySession()
 
-  useEffect(() => {
-    if (isLoaded && !isSignedIn) {
-      router.push("/sign-in")
-    }
-    if (isLoaded && user?.publicMetadata?.onboardingComplete) {
-      router.push("/dashboard")
-    }
-  }, [isLoaded, isSignedIn, user, router])
-
-  if (!isLoaded) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-brand-200 border-t-brand-600" />
-      </div>
-    )
-  }
-
-  if (!isSignedIn) {
-    return null
+  // Check if already onboarded - redirect to dashboard
+  const onboarded = await isOnboardingComplete()
+  if (onboarded) {
+    redirect("/dashboard")
   }
 
   return (

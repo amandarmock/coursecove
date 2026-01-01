@@ -1,5 +1,5 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server"
-import { NextResponse, NextRequest, NextFetchEvent } from "next/server"
+import { NextResponse } from "next/server"
 
 const isPublicRoute = createRouteMatcher([
   "/",
@@ -10,23 +10,38 @@ const isPublicRoute = createRouteMatcher([
   "/api/inngest(.*)",
 ])
 
-const clerkProxy = clerkMiddleware(async (auth, request) => {
-  if (!isPublicRoute(request)) {
+/**
+ * Next.js 16 Proxy (Layer 1: UX Optimization)
+ *
+ * This is NOT the security boundary - it's for fast redirects at the edge.
+ * Real security happens in the DAL (lib/dal.ts) via Server Components.
+ *
+ * @see docs/architecture/adrs/004-authentication-enforcement.md
+ */
+export default clerkMiddleware(async (auth, request) => {
+  const pathname = request.nextUrl.pathname
+  const isPublic = isPublicRoute(request)
+
+  // DEBUG: Log all requests through proxy
+  console.log(`[PROXY] ${request.method} ${pathname} | isPublic: ${isPublic}`)
+
+  if (!isPublic) {
     await auth.protect()
 
-    // Check onboarding completion for protected routes
+    // Check onboarding completion for protected PAGE routes only
+    // API routes are excluded - they return proper JSON error responses, not HTML redirects
     // Requires Session Token configured with: {"metadata": "{{user.public_metadata}}"}
-    const { sessionClaims } = await auth()
-    const onboardingComplete = sessionClaims?.metadata?.onboardingComplete
-    if (!onboardingComplete && !request.nextUrl.pathname.startsWith("/onboarding")) {
-      return NextResponse.redirect(new URL("/onboarding", request.url))
+    const isApiRoute = pathname.startsWith("/api/")
+    if (!isApiRoute) {
+      const { sessionClaims } = await auth()
+      const onboardingComplete = sessionClaims?.metadata?.onboardingComplete
+      if (!onboardingComplete && !pathname.startsWith("/onboarding")) {
+        console.log(`[PROXY] Redirecting to /onboarding (not complete)`)
+        return NextResponse.redirect(new URL("/onboarding", request.url))
+      }
     }
   }
 })
-
-export function proxy(request: NextRequest, event: NextFetchEvent) {
-  return clerkProxy(request, event)
-}
 
 export const config = {
   matcher: [

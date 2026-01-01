@@ -12,19 +12,6 @@ export const POLICY_VERSIONS = {
   dpa: "1.0",
 } as const
 
-export type PolicyType = keyof typeof POLICY_VERSIONS
-
-/**
- * Check if a user's accepted policy version is outdated.
- */
-export function isPolicyOutdated(
-  acceptedVersion: string | null | undefined,
-  policyType: PolicyType
-): boolean {
-  if (!acceptedVersion) return true
-  return acceptedVersion !== POLICY_VERSIONS[policyType]
-}
-
 /**
  * Consent method types for audit trail.
  */
@@ -34,16 +21,6 @@ export type ConsentMethod =
   | "oauth_google"
   | "email_verification"
   | "implicit"
-
-/**
- * Consent types that can be recorded.
- */
-export type ConsentType =
-  | "terms"
-  | "privacy"
-  | "dpa"
-  | "marketing"
-  | "coppa_parental"
 
 /**
  * Structure for pending consent stored in sessionStorage during sign-up.
