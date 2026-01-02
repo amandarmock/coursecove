@@ -36,7 +36,7 @@ const consentSchema = z.object({
 
 const completeOnboardingSchema = z.object({
   clerkOrgId: z.string().min(1),
-  name: z.string().min(1, "Business name is required").max(100).trim(),
+  name: z.string().min(2, "Business name must be at least 2 characters").max(100).trim(),
   slug: z
     .string()
     .min(3, "URL must be at least 3 characters")
@@ -99,12 +99,14 @@ export const onboardingRouter = router({
   complete: protectedProcedure
     .input(completeOnboardingSchema)
     .mutation(async ({ ctx, input }) => {
+      // Create Clerk client once for all operations
+      const clerk = await clerkClient()
+
       // LAYER 2: Verify org membership via Backend API (SECURITY)
       let memberships
       let clerkUser
       try {
-        const client = await clerkClient()
-        memberships = await client.users.getOrganizationMembershipList({
+        memberships = await clerk.users.getOrganizationMembershipList({
           userId: ctx.userId,
         })
       } catch (error) {
@@ -128,8 +130,7 @@ export const onboardingRouter = router({
 
       // LAYER 3: Get fresh user data from Clerk (source of truth)
       try {
-        const client = await clerkClient()
-        clerkUser = await client.users.getUser(ctx.userId)
+        clerkUser = await clerk.users.getUser(ctx.userId)
       } catch (error) {
         console.error("Failed to fetch user from Clerk:", error)
         throw new TRPCError({
@@ -247,6 +248,8 @@ export const onboardingRouter = router({
             action: "granted",
             version: POLICY_VERSIONS.dpa,
             method: "implicit",
+            ip_address: ipAddress,
+            user_agent: userAgent,
             granted_by: supabaseUserId,
             created_at: consentAcceptedAt,
           },
@@ -264,8 +267,7 @@ export const onboardingRouter = router({
       // This is critical - if it fails, user data is saved but they'll be stuck in onboarding.
       // However, the upserts above are idempotent, so retrying is safe.
       try {
-        const client = await clerkClient()
-        await client.users.updateUserMetadata(ctx.userId, {
+        await clerk.users.updateUserMetadata(ctx.userId, {
           publicMetadata: {
             onboardingComplete: true,
           },
