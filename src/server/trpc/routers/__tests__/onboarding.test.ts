@@ -376,5 +376,43 @@ describe("onboarding router", () => {
         expect(result).toEqual({ success: true })
       })
     })
+
+    describe("error handling", () => {
+      it("throws when Clerk metadata update fails", async () => {
+        const caller = createAuthenticatedCaller()
+
+        mockClerkUpdateUserMetadata.mockRejectedValue(
+          new Error("Clerk API error")
+        )
+
+        await expect(caller.onboarding.complete(validInput)).rejects.toThrow(
+          "Failed to complete onboarding"
+        )
+      })
+    })
+  })
+
+  describe("checkSlug", () => {
+    describe("error handling", () => {
+      it("returns unavailable when database error occurs", async () => {
+        const caller = createAuthenticatedCaller()
+
+        // Mock a database error (not PGRST116)
+        mockSupabaseSingle.mockResolvedValue({
+          data: null,
+          error: { code: "PGRST500", message: "Database error" },
+        })
+
+        const result = await caller.onboarding.checkSlug({
+          slug: "valid-slug",
+        })
+
+        expect(result.valid).toBe(true)
+        expect(result.available).toBe(false)
+        expect(result.message).toBe(
+          "Unable to verify availability. Please try again."
+        )
+      })
+    })
   })
 })
